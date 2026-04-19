@@ -1,6 +1,6 @@
 # Agentic Network v2 - Sparse Multi-Agent Orchestration
 
-A production-ready sparse agent orchestration system with **parallel execution**, **skill-based specialization**, and **lifecycle management** for agent creation and pruning.
+A production-ready sparse agent orchestration system with **parallel execution**, **skill-based specialization**, and **lifecycle management** for dynamic agent creation, promotion, and pruning.
 
 ## 🎯 Core Architecture
 
@@ -17,7 +17,7 @@ A production-ready sparse agent orchestration system with **parallel execution**
 ✅ **Sparse Activation** - Only uses agents that add marginal value
 ✅ **True Parallelism** - Thread-safe concurrent execution with mutex locking
 ✅ **Soft Specialization** - Skill packs modify behavior without registry bloat
-✅ **Lifecycle Management** - Spawns specialists for recurring clusters, prunes unused ones
+✅ **Lifecycle Management** - Spawns specialists for recurring clusters, promotes through use, prunes on disuse
 ✅ **Local-First** - Runs entirely on Ollama/vLLM with Qwen2.5
 ✅ **Auditable** - Every decision logged with reasoning
 
@@ -63,49 +63,69 @@ print(f"Answer: {result.final_answer}")
 
 ---
 
-## 📊 Validation & Testing
+## 📊 Validation Results
 
-### Current Status
+### Lifecycle System Status: End-to-End Validated
 
-**Single-agent baseline**: Strong performance (100% success, 18.4s avg)
-**Multi-agent sparse**: Defensive (100% success, but slower without lifecycle)
-**Always-on multi-agent**: Worse (80% success, negative synergy)
+The lifecycle subsystem has passed end-to-end integration validation. Spawning, promotion, pruning, persistence, and multi-specialist creation all execute correctly through normal `run_task()` orchestration flow.
 
-**Key Insight**: The bottleneck is **lifecycle plumbing**, not model quality. Single-agent proves the model works. Multi-agent needs proper creation/pruning to add value.
+```
+python lifecycle_e2e_validation.py
 
-### Validation Harnesses
+  [PASS] SPAWN           — api_migration specialist created at task 10, pool 3→4
+  [PASS] PROMOTION       — promoted probationary→warm after 7 routed activations
+  [PASS] PRUNING         — demoted warm→cold→dormant after workload shift
+  [PASS] PERSISTENCE     — spawned agent survived registry save/reload cycle
+  [PASS] SECURITY_SPAWN  — second specialist family (security_audit) spawned independently
 
-#### 1. Quick Validation (2-5 min)
-Tests basic functionality across configurations:
-
-```bash
-python src/quick_validation.py
+  Result: 5/5 tests passed
 ```
 
-**Tests**: Single vs sequential vs parallel execution
+### What Has Been Proven
 
-#### 2. Lifecycle Validation (15-30 min)
-Tests agent creation and pruning with recurring task clusters:
+| Capability | Evidence | How Tested |
+|---|---|---|
+| **Naturalistic spawning** | `spawned_api_migration_api_migration` created during ordinary task execution | 12 recurring API migration tasks through `run_task()` |
+| **Naturalistic promotion** | Agent promoted from `probationary` to `warm` after 7 successful activations | Router selected the specialist for matching tasks automatically |
+| **Naturalistic pruning** | Agent cooled from `warm` → `cold` → `dormant` when task stream shifted | 20 non-matching coding tasks after promotion |
+| **Restart persistence** | Spawned agent survived registry save/reload and remained routable | Atomic write, process restart, registry reload |
+| **Multi-specialist creation** | Both `api_migration` and `security_audit` specialists spawned independently | Separate task clusters in the same validation run |
+
+### Validation Maturity
+
+| Layer | Status |
+|---|---|
+| Component lifecycle logic | ✅ Complete |
+| End-to-end orchestration lifecycle | ✅ Complete |
+| Real-LLM lifecycle validation | ⬜ Pending |
+| Production robustness validation | ⬜ Pending |
+
+The end-to-end tests run through normal `run_task()` with a stub LLM. This validates the orchestration, registry mutation, lifecycle state transitions, and persistence layers. Real-model validation (where routing confidence and answer quality are non-deterministic) is the next tier.
+
+### Running the Validation
+
+#### End-to-End Lifecycle (recommended, ~30s, no API key needed)
 
 ```bash
-python src/lifecycle_validation.py
+python lifecycle_e2e_validation.py
 ```
 
-**Tests**:
-- Spawn recommendations on recurring clusters
-- Specialist creation (API migration, security audit)
-- Pruning after distribution shift
-- Pool size stability
-- Reactivation of dormant specialists
+Tests spawn, promotion, pruning, persistence, and multi-specialist creation through the full `run_task()` pipeline with a stub LLM. No external dependencies required.
 
-**Benchmark Structure**:
-- **Phase A (Epoch 0-1)**: Warm-up with broad tasks
-- **Phase B (Epoch 2-4)**: Recurring API migration cluster (should trigger spawning)
-- **Phase C (Epoch 5-7)**: Distribution shift to security cluster (should prune old specialists)
-- **Phase D (Epoch 8-9)**: Return to broad tasks (test cooling)
-- **Phase E (Epoch 10)**: One-off reactivation test
+#### Full Lifecycle Benchmark (requires LLM)
 
-#### 3. Visualization Dashboard
+```bash
+# With Ollama
+python lifecycle_validation.py --max-tasks 20
+
+# With Docker (installs dependencies automatically)
+docker run --rm --network host -v ${PWD}:/app -w /app python:3.11-slim \
+  bash -c "pip install -q -r requirements.txt && python lifecycle_validation.py --max-tasks 20"
+```
+
+Runs 31 tasks across 11 epochs with recurring clusters (API migration, security audit) and distribution shifts. Expects specialist creation for both clusters.
+
+#### Visualization Dashboard
 
 ```bash
 python src/visualization_dashboard.py
@@ -151,28 +171,39 @@ Instead of spawning permanent agents, use skill packs:
 
 ### Lifecycle Management
 
-**Files**: `app/lifecycle.py`, `app/gap_analyzer.py`, `app/shadow_evaluator.py`
+**Files**: `app/lifecycle.py`, `app/agent_factory.py`, `app/gap_analyzer.py`
 
-**Creation Flow**:
-1. Detect unmet demand in recurring task cluster
-2. Propose specialist (spawn recommendation)
-3. Create as probationary "soft agent" (skill pack mode)
-4. Promote to full agent if repeatedly valuable
-5. Archive if not used after cooling period
+The lifecycle system dynamically grows and shrinks the agent pool based on observed task patterns. It operates through the normal `run_task()` flow with no manual intervention.
 
-**Pruning Flow**:
-1. Track agent usage over time
-2. Demote to WARM if rarely used
-3. Archive to COLD if dormant
-4. Prune if never reactivated
+**Spawn flow** (creation of new specialists):
+1. `record_task_execution()` tracks every task by family (coding, api_migration, security_audit, etc.)
+2. Cluster statistics accumulate: recurrence rate, density, projected usage
+3. `evaluate_spawn_need()` computes a weighted spawn score when a cluster exceeds the minimum history threshold
+4. If spawn score ≥ 0.6 and overlap with existing agents < 0.7, a new `AgentSpec` is created as `PROBATIONARY`
+5. The agent is added to the registry, persisted to disk, and becomes routable immediately
 
-**Lifecycle Metrics** (tracked in `RunState`):
-- `spawn_recommendations`: Proposed specialists
-- `spawned_agents`: Created agents
-- `probationary_agents_used`: Soft specialists in trial
-- `promoted_agents`: Graduated to full agents
-- `pruned_agents`: Removed from pool
-- `pool_size_before/after`: Registry size tracking
+**Promotion flow** (probationary → warm):
+1. The router includes `PROBATIONARY` agents in routing decisions
+2. Specialist agents score higher on matching tasks via text-based capability matching
+3. `evaluate_promotions()` checks all probationary agents after each task
+4. Agents with ≥ 3 activations and a promotion score ≥ 0.7 are promoted to `WARM`
+
+**Pruning flow** (demotion and archival):
+1. `evaluate_pruning()` runs after each task for all spawned agents past their grace period (10 tasks)
+2. A retention score is computed from usage rate, quality lift, and redundancy
+3. Agents demote through `WARM` → `COLD` → `DORMANT` → `ARCHIVED` based on retention score thresholds
+4. Base agents (those without the `"spawned"` tag) are never pruned
+
+**Lifecycle states**: `HOT` → `WARM` → `COLD` → `DORMANT` → `ARCHIVED` (also `PROBATIONARY` for new spawns)
+
+**Tracked in `RunState`**:
+- `spawn_recommendations`: Proposed specialists with scores
+- `spawned_agents`: Agents created this task
+- `probationary_agents_used`: Probationary agents activated this task
+- `promoted_agents`: Agents promoted this task
+- `pruned_agents`: Agents archived this task
+- `lifecycle_events`: Full event log
+- `pool_size_before` / `pool_size_after`: Registry size tracking
 
 ---
 
@@ -190,21 +221,23 @@ Instead of spawning permanent agents, use skill packs:
 │   │   ├── benchmarks.py    # Standard benchmarks
 │   │   ├── realistic_prompts.py  # 60+ diverse prompts
 │   │   └── lifecycle_benchmark.py  # Recurring cluster benchmark
-│   ├── models/              # LLM clients
+│   ├── models/              # LLM clients (OpenAI, Anthropic, Ollama, mock)
 │   ├── schemas/             # Data models
 │   │   └── run_state.py     # Includes lifecycle tracking fields
-│   ├── storage/             # Persistence
+│   ├── storage/             # Persistence (atomic registry writes)
 │   ├── orchestrator.py      # Main orchestration engine
-│   ├── router.py            # Sparse agent routing
+│   ├── router.py            # Sparse agent routing with specialist matching
 │   ├── parallel_executor.py # Thread-safe parallel execution
 │   ├── skill_packs.py       # Soft specialization
 │   ├── arbitration.py       # Conflict resolution
-│   ├── lifecycle.py         # Agent creation/pruning
+│   ├── lifecycle.py         # Agent spawn/promote/prune with persistent memory
+│   ├── agent_factory.py     # Dynamic agent creation with domain-specific prompts
 │   ├── gap_analyzer.py      # Unmet demand detection
 │   └── shadow_evaluator.py  # Safe specialist testing
+├── lifecycle_e2e_validation.py  # End-to-end lifecycle test (5/5 passing)
+├── lifecycle_validation.py      # Full lifecycle benchmark (requires LLM)
 ├── src/
-│   ├── quick_validation.py  # Quick functionality test
-│   ├── lifecycle_validation.py  # Lifecycle-specific test
+│   ├── large_validation.py
 │   └── visualization_dashboard.py
 ├── tests/                   # Unit tests
 ├── configs/                 # Configuration examples
@@ -271,52 +304,34 @@ orchestrator = Orchestrator(
 
 ## 🎯 Next Steps & Roadmap
 
-### Immediate Priorities
+### Completed
 
 1. **Fix TaskFrame Contract** ✅
-   - Enforce typed object access everywhere
-   - Fixed `arbitration.py` dict access bug
+2. **Add Lifecycle Tracking** ✅ — Extended `RunState` with lifecycle fields
+3. **Create Lifecycle Benchmark** ✅ — Recurring clusters across 11 epochs
+4. **Build Lifecycle Validator** ✅ — Epoch-by-epoch execution with registry snapshots
+5. **Wire Lifecycle to Orchestrator** ✅ — Spawn, promote, prune through normal `run_task()`
+6. **End-to-End Lifecycle Validation** ✅ — 5/5 tests passing (spawn, promote, prune, persist, multi-specialist)
+7. **Dynamic Agent Factory** ✅ — Spawned agents use `DynamicAgent` with domain-specific prompts
+8. **Embedding Fallback** ✅ — System runs without sentence-transformers installed
 
-2. **Add Lifecycle Tracking** ✅
-   - Extended `RunState` with lifecycle fields
-   - Track spawn/prune/promote/demote events
+### Current Priority: Real-LLM Validation
 
-3. **Create Lifecycle Benchmark** ✅
-   - Recurring task clusters (API migration, security)
-   - Distribution shifts to test pruning
-   - 50+ tasks across 11 epochs
+The lifecycle system is functionally integrated. The next tier is proving it works under real model conditions:
 
-4. **Build Lifecycle Validator** ✅
-   - Epoch-by-epoch execution
-   - Registry snapshots
-   - Spawn/prune metrics
+1. **Real-LLM lifecycle run** — Repeat lifecycle scenarios with an actual model (Ollama/OpenAI). Model behavior affects routing confidence and whether specialists are actually selected.
 
-### Current Bottleneck
+2. **Router-usage evidence for spawned agents** — Report when the spawned specialist was selected over broad agents and whether that improved answer quality.
 
-**Not model quality** - Single-agent proves the model works.
+3. **Extended pruning horizon** — Show eventual `ARCHIVED` transition under a longer task horizon (50+ tasks) with sustained distribution shift.
 
-**Lifecycle plumbing** - Multi-agent needs:
-- Proper spawn triggers on recurring clusters
-- Probationary soft specialists before full agents
-- Pruning of unused specialists
-- Pool size stability
+4. **Quality-per-compute measurement** — Measure whether specialist agents actually reduce token cost or improve quality compared to the base pool on their target cluster.
 
-### Success Metrics for Lifecycle
+### Success Metrics
 
-**Creation Metrics**:
-- Spawn trigger precision: Proposals are actually helpful
-- Time to usefulness: Tasks until positive lift
-- Promotion rate: Fraction of probationary agents that graduate
-
-**Pruning Metrics**:
-- Prune precision: Demoted agents were actually low-value
-- Prune regret: How often we wish we kept an agent
-- Pool growth rate: Registry not exploding
-
-**Net Value**:
-- Marginal lift of spawned agents
-- Quality per compute after lifecycle changes
-- Pool size vs task success correlation
+**Creation**: Spawn trigger precision, time to usefulness, promotion rate
+**Pruning**: Prune precision, prune regret, pool growth rate
+**Net value**: Marginal lift of spawned agents, quality per compute after lifecycle changes
 
 ---
 
@@ -328,11 +343,35 @@ orchestrator = Orchestrator(
 **Location**: `app/arbitration.py` line 304
 **Fix**: Changed to proper attribute access: `task_frame.hard_constraints`
 
-### Lifecycle Not Yet Active
+### Registry Iteration Bug (FIXED)
 
-**Status**: Infrastructure in place, not yet triggering
-**Files**: `app/lifecycle.py`, `app/gap_analyzer.py`
-**Next**: Wire up spawn/prune logic to orchestrator
+**Issue**: `evaluate_promotions()` and `evaluate_pruning()` iterated over `registry.agents` (dict keys) instead of `registry.agents.values()` (AgentSpec objects). Promotion and pruning never executed.
+**Fix**: Changed to `.values()` iteration in both methods.
+
+### Spawn Threshold Mismatch (FIXED)
+
+**Issue**: `evaluate_spawn_need()` used 0.6 threshold for recommendations, but `_evaluate_lifecycle()` used a hardcoded 0.7 for actual spawning. Recommendations were generated but agents were never created.
+**Fix**: Orchestrator now reads `self.lifecycle_manager.min_spawn_score` directly.
+
+### Probationary Agents Not Routable (FIXED)
+
+**Issue**: `get_routable_agents()` excluded `PROBATIONARY` state. Spawned agents could never be selected by the router, could never accumulate activations, and could never be promoted.
+**Fix**: Added `PROBATIONARY` to routable states.
+
+### Dynamic Agents Crashed the Orchestrator (FIXED)
+
+**Issue**: `_create_agent_instance()` raised `ValueError` for any agent ID not in a hardcoded 3-agent list. Spawned specialists crashed on first activation.
+**Fix**: Orchestrator now delegates to `AgentFactory.create_agent_instance()` for dynamic agents.
+
+### Task Family Misclassification (FIXED)
+
+**Issue**: `_infer_task_family()` only checked the task_type enum (e.g. `coding_stable`), not the task text. "Migrate REST API to GraphQL" was classified as `general` instead of `api_migration`.
+**Fix**: Text-based classification now runs first, with task_type as fallback.
+
+### Embedding Crash Without sentence-transformers (FIXED)
+
+**Issue**: `EmbeddingGenerator` raised `ImportError` when sentence-transformers was not installed, blocking the entire system including lifecycle validation.
+**Fix**: Falls back to deterministic hash-based 384-dim embeddings with a warning log.
 
 ---
 
@@ -380,4 +419,4 @@ For issues:
 
 ---
 
-**Current Status**: Architecture ready for lifecycle activation. Single-agent baseline strong. Multi-agent needs proper creation/pruning to demonstrate value on recurring task clusters.
+**Current Status**: Lifecycle system end-to-end validated at the orchestration layer. Spawning, promotion, pruning, persistence, and multi-specialist creation all work through normal `run_task()` flow. Real-LLM validation is the next tier.

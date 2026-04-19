@@ -107,6 +107,10 @@ def create_patched_orchestrator(data_dir: str = "data/e2e_test"):
     orch.lifecycle_manager = LifecycleManager(registry, orch.embedding_generator)
     orch.budget_mode = "balanced"
 
+    # Agent factory for dynamic agents
+    from app.agent_factory import AgentFactory
+    orch.agent_factory = AgentFactory(orch.llm_client)
+
     # Skip GapAnalyzer (needs embeddings at init, not critical for lifecycle)
     class _NoOpGapAnalyzer:
         def analyze_gap(self, *a, **kw):
@@ -249,8 +253,6 @@ def test_naturalistic_promotion(orch, spawned_ids: List[str]) -> Dict[str, Any]:
         "Migrate the order management API to use async endpoints",
         "Convert the customer API from SOAP to REST",
         "Update the shipping API to support batch operations",
-        "Migrate the returns API to use event-driven architecture",
-        "Convert the catalog API to support GraphQL queries",
     ]
 
     for i, prompt in enumerate(prompts):

@@ -96,8 +96,8 @@
         "specialist",
         "probationary"
       ],
-      "created_at": "2026-04-19T02:51:07.684302",
-      "updated_at": "2026-04-19T02:51:07.684315",
+      "created_at": "2026-04-19T03:02:13.392075",
+      "updated_at": "2026-04-19T03:02:13.392112",
       "parent_lineage": null,
       "target_cluster": null,
       "expected_activation_rate": 0.0,
@@ -109,5 +109,5 @@
       "overlap_with": {}
     }
   },
-  "last_updated": "2026-04-19T02:51:07.684337"
+  "last_updated": "2026-04-19T03:02:13.392120"
 }

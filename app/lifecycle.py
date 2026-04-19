@@ -50,6 +50,7 @@ class LifecycleManager:
         self.min_cluster_size_for_spawn = 5
         self.min_promotion_score = 0.7
         self.min_retention_score = 0.3
+        self.grace_period_tasks = 10
         
         # Weights for scoring (from spec)
         self.spawn_weights = {
@@ -450,17 +451,9 @@ class LifecycleManager:
                 performance_data = {
                     "quality_lift": perf.get("success_count", 0) / max(1, perf.get("activation_count", 1)),
                     "success_rate": perf.get("success_count", 0) / max(1, perf.get("activation_count", 1)),
-                    "relative_cost": 0.5,  # Would be computed from actual usage
-                    "overlap_score": 0.3,  # Would be computed from similarity
+                    "relative_cost": 0.5,
+                    "overlap_score": 0.3,
                 }
-                
-                # Debug: Calculate expected promotion score
-                expected_score = (
-                    0.4 * performance_data["quality_lift"] +
-                    0.3 * performance_data["success_rate"] +
-                    0.2 * (1.0 - performance_data["relative_cost"]) +
-                    0.1 * (1.0 - performance_data["overlap_score"])
-                )
                 
                 # Evaluate promotion
                 if self.evaluate_promotion(agent.agent_id, performance_data):
@@ -468,7 +461,7 @@ class LifecycleManager:
                     events.append({
                         "event_type": "promotion",
                         "agent_id": agent.agent_id,
-                        "reason": f"Promoted after {perf.get('activation_count', 0)} successful activations (score: {expected_score:.3f})",
+                        "reason": f"Promoted after {perf.get('activation_count', 0)} activations",
                         "timestamp": datetime.utcnow().isoformat()
                     })
         
@@ -495,16 +488,16 @@ class LifecycleManager:
             if not isinstance(agent, AgentSpec):
                 continue
             
-            # Skip base agents
-            if agent.agent_id in ["code_primary", "web_research", "critic_verifier"]:
+            # Skip base agents (those without the "spawned" tag)
+            if "spawned" not in (agent.tags or []):
                 continue
             
-            # Grace period: skip agents spawned recently (fewer than 10 tasks ago)
+            # Grace period: skip agents spawned recently
             if agent.agent_id in self.spawned_agents:
                 spawn_task_count = self.spawned_agents[agent.agent_id].get("spawn_task_count", 0)
                 tasks_since_spawn = len(self.task_history) - spawn_task_count
-                if tasks_since_spawn < 10:
-                    continue  # Too early to prune
+                if tasks_since_spawn < self.grace_period_tasks:
+                    continue
             
             # Get performance data
             perf = self.agent_performance.get(agent.agent_id, {})

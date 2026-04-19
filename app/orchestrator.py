@@ -25,6 +25,7 @@ from app.parallel_executor import ParallelExecutor, SharedContext, AgentTask
 from app.skill_packs import get_skill_pack_registry
 from app.lifecycle import LifecycleManager
 from app.gap_analyzer import GapAnalyzer
+from app.agent_factory import AgentFactory, DynamicAgent
 from datetime import datetime
 import json
 from pathlib import Path
@@ -81,8 +82,8 @@ class Orchestrator:
         )
         self.validator = Validator()
         
-        # Lead-agent pattern - DISABLED by default for better collaboration
-        self.use_lead_agent_pattern = False  # Changed from use_lead_agent_pattern parameter
+        # Lead-agent pattern
+        self.use_lead_agent_pattern = use_lead_agent_pattern
         self.lead_coordinator = LeadAgentCoordinator(max_supporting_agents=2)
         
         # Parallel execution
@@ -97,6 +98,9 @@ class Orchestrator:
             self.registry,
             self.embedding_generator
         )
+        
+        # Agent factory for dynamic agent creation
+        self.agent_factory = AgentFactory(self.llm_client)
         
         # Gap analyzer
         self.gap_analyzer = GapAnalyzer(
@@ -198,6 +202,10 @@ class Orchestrator:
         quality_score = 0.8 if run_state.final_state == "success" else 0.3
         for agent_id in run_state.active_agents:
             self.router.record_agent_performance(agent_id, quality_score)
+            # Track probationary agents that were activated
+            agent_spec = self.registry.get_agent(agent_id)
+            if agent_spec and agent_spec.lifecycle_state == LifecycleState.PROBATIONARY:
+                run_state.probationary_agents_used.append(agent_id)
         
         # Record task execution in lifecycle manager for history tracking
         self.lifecycle_manager.record_task_execution(
@@ -264,8 +272,8 @@ class Orchestrator:
             }
             recommendations["spawn_recommendations"].append(spawn_recommendation)
             
-            # If spawn score is high enough, actually spawn
-            if spawn_recommendation.get("spawn_score", 0) >= 0.6:  # Changed from 0.7 to 0.6
+            # If spawn score meets threshold, actually spawn
+            if spawn_recommendation.get("spawn_score", 0) >= self.lifecycle_manager.min_spawn_score:
                 # Create a new agent spec
                 new_agent_id = spawn_spec["agent_id"]
                 new_agent_spec = AgentSpec(
@@ -275,7 +283,7 @@ class Orchestrator:
                     domain=spawn_spec.get("domain", "unknown"),
                     lifecycle_state="probationary",
                     tools=spawn_spec.get("tools", ["repo_tool", "web_tool"]),
-                    tags=["specialist", "probationary"]
+                    tags=["spawned", "specialist"]
                 )
                 
                 self.registry.add_agent(new_agent_spec)
@@ -661,23 +669,24 @@ class Orchestrator:
         agent_spec: AgentSpec,
         available_packs: List[Any]
     ) -> List[Any]:
-        """Select relevant skill packs for an agent based on its domain."""
+        """Select relevant skill packs for an agent based on its domain and tags."""
         selected = []
         
+        domain_pack_map = {
+            "coding": ["algorithm_optimization", "code_review", "debugging_mode", "security_focused"],
+            "research": ["fact_checking", "sorting_comparison", "architecture_comparison"],
+            "verification": ["logical_analysis", "quantitative_analysis", "code_review"],
+            "security_audit": ["security_focused", "code_review"],
+            "api_migration": ["code_review", "implementation_with_research"],
+        }
+        
+        # Universal packs that apply to all agents
+        universal_packs = {"implementation_with_research", "security_focused"}
+        
+        domain_packs = set(domain_pack_map.get(agent_spec.domain, []))
+        
         for pack in available_packs:
-            # Match by agent domain
-            if agent_spec.domain == "coding":
-                if pack.pack_id in ["algorithm_optimization", "code_review", "debugging_mode", "security_focused"]:
-                    selected.append(pack)
-            elif agent_spec.domain == "research":
-                if pack.pack_id in ["fact_checking", "sorting_comparison", "architecture_comparison"]:
-                    selected.append(pack)
-            elif agent_spec.domain == "verification":
-                if pack.pack_id in ["logical_analysis", "quantitative_analysis", "code_review"]:
-                    selected.append(pack)
-            
-            # Hybrid packs apply to all
-            if pack.pack_id in ["implementation_with_research", "security_focused"]:
+            if pack.pack_id in domain_packs or pack.pack_id in universal_packs:
                 if pack not in selected:
                     selected.append(pack)
         
@@ -686,7 +695,10 @@ class Orchestrator:
     def _initialize_registry(self) -> AgentRegistry:
         """Initialize or load agent registry."""
         # Try to load existing registry
-        registry = self.registry_store.load_registry()
+        try:
+            registry = self.registry_store.load_registry()
+        except Exception:
+            registry = None
         
         if registry and registry.agents:
             return registry
@@ -733,41 +745,29 @@ class Orchestrator:
         return registry
     
     def _create_agent_instance(self, agent_spec: AgentSpec):
-        """Create agent instance from spec."""
-        if agent_spec.agent_id == "code_primary":
-            return CodePrimaryAgent(
+        """Create agent instance from spec.
+        
+        Uses known agent classes for base agents and DynamicAgent
+        for any spawned/specialist agents.
+        """
+        agent_map = {
+            "code_primary": CodePrimaryAgent,
+            "web_research": WebResearchAgent,
+            "critic_verifier": CriticVerifierAgent,
+        }
+        
+        agent_cls = agent_map.get(agent_spec.agent_id)
+        if agent_cls:
+            return agent_cls(
                 agent_spec.agent_id,
                 agent_spec.name,
                 agent_spec.description,
                 self.llm_client,
                 agent_spec.tools
             )
-        elif agent_spec.agent_id == "web_research":
-            return WebResearchAgent(
-                agent_spec.agent_id,
-                agent_spec.name,
-                agent_spec.description,
-                self.llm_client,
-                agent_spec.tools
-            )
-        elif agent_spec.agent_id == "critic_verifier":
-            return CriticVerifierAgent(
-                agent_spec.agent_id,
-                agent_spec.name,
-                agent_spec.description,
-                self.llm_client,
-                agent_spec.tools
-            )
-        else:
-            # For spawned/dynamic agents, use CodePrimaryAgent as base
-            # with the spawned agent's spec
-            return CodePrimaryAgent(
-                agent_spec.agent_id,
-                agent_spec.name,
-                agent_spec.description,
-                self.llm_client,
-                agent_spec.tools
-            )
+        
+        # Spawned / dynamic agents
+        return self.agent_factory.create_agent_instance(agent_spec)
     
     def _collaborative_synthesis(
         self,
@@ -819,7 +819,11 @@ Focus on creating an answer that is MORE COMPLETE, MORE ACCURATE, and MORE INSIG
 
 Final synthesized answer:"""
         
-        final_answer = self.llm_client.generate(synthesis_prompt, max_tokens=1500, temperature=0.4)
+        try:
+            final_answer = self.llm_client.generate(synthesis_prompt, max_tokens=1500, temperature=0.4)
+        except Exception:
+            # Fallback: return the best single-agent output
+            final_answer = max(agent_outputs.values(), key=lambda o: len(o.get("output", "")))["output"]
         return final_answer
     
     def _synthesize_answer(

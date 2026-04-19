@@ -165,7 +165,7 @@ class EvaluationRunner:
         Returns:
             Dictionary with counterfactual results
         """
-        available_agents = ["code_primary", "web_research", "critic_verifier"]
+        available_agents = [a.agent_id for a in self.orchestrator.registry.get_routable_agents()]
         
         # Generate agent subsets to test
         subsets_to_test = []
@@ -307,7 +307,7 @@ class EvaluationRunner:
             completion_tokens=int(estimated_tokens * 0.4),
             latency_seconds=latency,
             active_agents=run_state.active_agents,
-            total_available_agents=3,  # Default agents
+            total_available_agents=len(self.orchestrator.registry.get_routable_agents()),
             selected_agents=run_state.active_agents,
             suppressed_agents=run_state.suppressed_agents or [],
             routing_scores={},

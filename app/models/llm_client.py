@@ -105,10 +105,13 @@ class AnthropicClient(LLMClient):
         
         text = response.content[0].text
         # Extract JSON from markdown code blocks if present
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0].strip()
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0].strip()
+        try:
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0].strip()
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0].strip()
+        except IndexError:
+            pass  # Use text as-is
         
         return json.loads(text)
     
