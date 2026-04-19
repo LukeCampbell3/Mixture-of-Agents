@@ -1,0 +1,30 @@
+.
+├── app/                          # Main application code
+│   ├── agents/                   # Agent implementations
+│   │   ├── base_agent.py
+│   │   ├── code_primary.py
+│   │   ├── critic_verifier.py
+│   │   └── web_research.py
+│   ├── evaluation/               # Evaluation & benchmarks
+│   │   ├── benchmarks.py
+│   │   ├── realistic_prompts.py  # 60+ realistic test prompts
+│   │   └── ...
+│   ├── models/                   # LLM clients, embeddings
+│   ├── schemas/                  # Data models
+│   ├── storage/                  # Persistence
+│   ├── orchestrator.py           # Main orchestration engine
+│   ├── router.py                 # Agent routing
+│   ├── parallel_executor.py      # Parallel execution
+│   ├── skill_packs.py            # Soft specialization
+│   ├── arbitration.py            # Conflict resolution
+│   └── ...
+├── src/
+│   ├── quick_validation.py       # Quick validation test
+│   └── visualization_dashboard.py
+├── tests/                        # Unit tests
+├── configs/                      # Configuration examples
+├── scripts/                      # Setup scripts
+├── README.md                     # Single README file
+├── requirements.txt
+├── Dockerfile
+└── docker-compose.yml

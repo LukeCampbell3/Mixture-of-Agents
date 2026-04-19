@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  # Ollama service for running Qwen2.5 locally
+  ollama:
+    image: ollama/ollama:latest
+    container_name: agentic-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: serve
+
+  # Alternative: vLLM service for high-performance inference
+  vllm:
+    image: vllm/vllm-openai:latest
+    container_name: agentic-vllm
+    ports:
+      - "8000:8000"
+    volumes:
+      - vllm_cache:/root/.cache
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HUGGING_FACE_HUB_TOKEN}
+    command: >
+      --model Qwen/Qwen2.5-7B-Instruct
+      --host 0.0.0.0
+      --port 8000
+      --max-model-len 4096
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    profiles:
+      - vllm
+
+  # Agentic Network application
+  agentic-network:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: agentic-network-app
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./data:/app/data
+      - ./configs:/app/configs
+    environment:
+      - LLM_PROVIDER=ollama
+      - LLM_MODEL=qwen2.5:latest
+      - LLM_BASE_URL=http://ollama:11434
+      - BUDGET_MODE=balanced
+    depends_on:
+      - ollama
+    restart: unless-stopped
+    profiles:
+      - app
+
+volumes:
+  ollama_data:
+  vllm_cache:

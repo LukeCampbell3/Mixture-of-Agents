@@ -1,0 +1,86 @@
+{
+  "timestamp": "2026-04-19T03:00:17.709501",
+  "results": {
+    "spawn": {
+      "passed": true,
+      "pool_before": 3,
+      "pool_after": 4,
+      "spawned_agents": [
+        "spawned_api_migration_api_migration"
+      ],
+      "spawn_events": []
+    },
+    "promotion": {
+      "passed": true,
+      "agent_id": "spawned_api_migration_api_migration",
+      "initial_state": "probationary (at spawn)",
+      "final_state": "LifecycleState.WARM",
+      "activation_count": 7,
+      "success_count": 7,
+      "note": "Promotion occurred during spawn-phase tasks via normal run_task()"
+    },
+    "pruning": {
+      "passed": true,
+      "agent_id": "spawned_api_migration_api_migration",
+      "initial_state": "LifecycleState.WARM",
+      "final_state": "LifecycleState.DORMANT",
+      "demotions": [
+        {
+          "task": 3,
+          "event": "demote",
+          "state": "LifecycleState.COLD"
+        },
+        {
+          "task": 4,
+          "event": "demote",
+          "state": "LifecycleState.DORMANT"
+        }
+      ]
+    },
+    "persistence": {
+      "passed": true,
+      "pool_before_restart": [
+        "code_primary",
+        "critic_verifier",
+        "spawned_api_migration_api_migration",
+        "web_research"
+      ],
+      "pool_after_restart": [
+        "code_primary",
+        "critic_verifier",
+        "spawned_api_migration_api_migration",
+        "web_research"
+      ],
+      "spawned_before": [
+        "spawned_api_migration_api_migration"
+      ],
+      "survived": [
+        "spawned_api_migration_api_migration"
+      ],
+      "routable_after_restart": [
+        "code_primary",
+        "web_research",
+        "critic_verifier",
+        "spawned_api_migration_api_migration"
+      ]
+    },
+    "security_spawn": {
+      "passed": true,
+      "pool_before": 3,
+      "pool_after": 4,
+      "security_agents": [
+        "spawned_security_audit_security_audit"
+      ],
+      "all_agents": [
+        "code_primary",
+        "critic_verifier",
+        "spawned_security_audit_security_audit",
+        "web_research"
+      ]
+    }
+  },
+  "summary": {
+    "passed": 5,
+    "total": 5
+  }
+}

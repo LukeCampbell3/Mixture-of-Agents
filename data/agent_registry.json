@@ -1,0 +1,113 @@
+{
+  "version": "1.0.0",
+  "agents": {
+    "code_primary": {
+      "agent_id": "code_primary",
+      "name": "Code Primary",
+      "description": "Primary coding agent for implementation, debugging, and architecture",
+      "domain": "coding",
+      "lifecycle_state": "hot",
+      "tools": [
+        "repo_tool",
+        "test_runner"
+      ],
+      "tags": [
+        "coding",
+        "implementation",
+        "debugging"
+      ],
+      "created_at": "2026-04-18T04:54:37.712661",
+      "updated_at": "2026-04-18T04:54:37.712661",
+      "parent_lineage": null,
+      "target_cluster": null,
+      "expected_activation_rate": 0.0,
+      "total_activations": 0,
+      "successful_activations": 0,
+      "average_quality_lift": 0.0,
+      "average_token_cost": 0.0,
+      "calibration_score": 0.5,
+      "overlap_with": {}
+    },
+    "web_research": {
+      "agent_id": "web_research",
+      "name": "Web Research",
+      "description": "Research agent for current documentation and fact validation",
+      "domain": "research",
+      "lifecycle_state": "warm",
+      "tools": [
+        "web_tool",
+        "citation_checker"
+      ],
+      "tags": [
+        "research",
+        "documentation",
+        "validation"
+      ],
+      "created_at": "2026-04-18T04:54:37.712661",
+      "updated_at": "2026-04-18T04:54:37.712661",
+      "parent_lineage": null,
+      "target_cluster": null,
+      "expected_activation_rate": 0.0,
+      "total_activations": 0,
+      "successful_activations": 0,
+      "average_quality_lift": 0.0,
+      "average_token_cost": 0.0,
+      "calibration_score": 0.5,
+      "overlap_with": {}
+    },
+    "critic_verifier": {
+      "agent_id": "critic_verifier",
+      "name": "Critic Verifier",
+      "description": "Verification agent for consistency checking and risk assessment",
+      "domain": "verification",
+      "lifecycle_state": "warm",
+      "tools": [
+        "test_runner",
+        "citation_checker"
+      ],
+      "tags": [
+        "verification",
+        "testing",
+        "quality"
+      ],
+      "created_at": "2026-04-18T04:54:37.712661",
+      "updated_at": "2026-04-18T04:54:37.712661",
+      "parent_lineage": null,
+      "target_cluster": null,
+      "expected_activation_rate": 0.0,
+      "total_activations": 0,
+      "successful_activations": 0,
+      "average_quality_lift": 0.0,
+      "average_token_cost": 0.0,
+      "calibration_score": 0.5,
+      "overlap_with": {}
+    },
+    "spawned_general_general": {
+      "agent_id": "spawned_general_general",
+      "name": "Specialized General Agent",
+      "description": "Agent spawned to handle general tasks in cluster general",
+      "domain": "general",
+      "lifecycle_state": "probationary",
+      "tools": [
+        "repo_tool",
+        "web_tool"
+      ],
+      "tags": [
+        "specialist",
+        "probationary"
+      ],
+      "created_at": "2026-04-19T02:51:07.684302",
+      "updated_at": "2026-04-19T02:51:07.684315",
+      "parent_lineage": null,
+      "target_cluster": null,
+      "expected_activation_rate": 0.0,
+      "total_activations": 0,
+      "successful_activations": 0,
+      "average_quality_lift": 0.0,
+      "average_token_cost": 0.0,
+      "calibration_score": 0.5,
+      "overlap_with": {}
+    }
+  },
+  "last_updated": "2026-04-19T02:51:07.684337"
+}

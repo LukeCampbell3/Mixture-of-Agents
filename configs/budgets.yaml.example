@@ -1,0 +1,22 @@
+# Budget profiles
+
+low:
+  max_active_agents: 1
+  max_prompt_tokens: 5000
+  max_retrieval_calls: 2
+  max_validation_passes: 1
+  max_wall_clock_seconds: 30
+
+balanced:
+  max_active_agents: 3
+  max_prompt_tokens: 15000
+  max_retrieval_calls: 5
+  max_validation_passes: 2
+  max_wall_clock_seconds: 60
+
+thorough:
+  max_active_agents: 5
+  max_prompt_tokens: 30000
+  max_retrieval_calls: 10
+  max_validation_passes: 3
+  max_wall_clock_seconds: 120

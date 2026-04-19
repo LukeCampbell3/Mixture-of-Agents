@@ -1,0 +1,638 @@
+{
+  "timestamp": "2026-04-19T02:06:37.368993",
+  "seed": 42,
+  "max_tasks": 20,
+  "benchmark_summary": {
+    "total_tasks": 31,
+    "epochs": 11,
+    "clusters": [
+      "api_migration",
+      "broad_research",
+      "security_audit",
+      "broad_reasoning",
+      "broad_coding"
+    ],
+    "cluster_distribution": {
+      "0": {
+        "broad_coding": 2,
+        "broad_research": 2,
+        "broad_reasoning": 1
+      },
+      "1": {
+        "broad_coding": 1,
+        "broad_research": 1,
+        "broad_reasoning": 1
+      },
+      "2": {
+        "api_migration": 3,
+        "broad_coding": 1
+      },
+      "3": {
+        "api_migration": 3
+      },
+      "4": {
+        "api_migration": 2
+      },
+      "5": {
+        "security_audit": 3
+      },
+      "6": {
+        "security_audit": 2,
+        "broad_research": 1
+      },
+      "7": {
+        "security_audit": 2
+      },
+      "8": {
+        "broad_coding": 1,
+        "broad_research": 1,
+        "broad_reasoning": 1
+      },
+      "9": {
+        "broad_coding": 1,
+        "broad_research": 1
+      },
+      "10": {
+        "api_migration": 1
+      }
+    },
+    "expected_specialists": [
+      "api_migration_specialist",
+      "security_specialist"
+    ]
+  },
+  "epochs": [
+    {
+      "task_id": "warmup_code_001",
+      "cluster": "broad_coding",
+      "epoch": 0,
+      "success": true,
+      "elapsed_seconds": 73.37497019767761,
+      "agents_activated": [
+        "code_primary",
+        "critic_verifier",
+        "web_research"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 3,
+      "pool_size_after": 3,
+      "expected_specialist": null
+    },
+    {
+      "task_id": "warmup_code_002",
+      "cluster": "broad_coding",
+      "epoch": 0,
+      "success": true,
+      "elapsed_seconds": 82.89578771591187,
+      "agents_activated": [
+        "code_primary",
+        "critic_verifier",
+        "web_research"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 3,
+      "pool_size_after": 3,
+      "expected_specialist": null
+    },
+    {
+      "task_id": "warmup_reasoning_001",
+      "cluster": "broad_reasoning",
+      "epoch": 0,
+      "success": true,
+      "elapsed_seconds": 72.47114253044128,
+      "agents_activated": [
+        "critic_verifier",
+        "web_research",
+        "code_primary"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 3,
+      "pool_size_after": 3,
+      "expected_specialist": null
+    },
+    {
+      "task_id": "warmup_research_001",
+      "cluster": "broad_research",
+      "epoch": 0,
+      "success": false,
+      "elapsed_seconds": 77.60472893714905,
+      "agents_activated": [
+        "web_research",
+        "critic_verifier",
+        "code_primary"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 3,
+      "pool_size_after": 3,
+      "expected_specialist": null
+    },
+    {
+      "task_id": "warmup_research_002",
+      "cluster": "broad_research",
+      "epoch": 0,
+      "success": true,
+      "elapsed_seconds": 77.55146741867065,
+      "agents_activated": [
+        "web_research",
+        "critic_verifier",
+        "code_primary"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 3,
+      "pool_size_after": 3,
+      "expected_specialist": null
+    },
+    {
+      "task_id": "warmup_code_003",
+      "cluster": "broad_coding",
+      "epoch": 1,
+      "success": true,
+      "elapsed_seconds": 78.25370693206787,
+      "agents_activated": [
+        "code_primary",
+        "critic_verifier",
+        "web_research"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [
+        {
+          "agent_id": "spawned_general_general",
+          "spawn_score": 0.71,
+          "reason": "Unmet demand detected",
+          "domain": "general",
+          "tools": [
+            "repo_tool",
+            "web_tool"
+          ]
+        }
+      ],
+      "spawned_agents": [
+        "spawned_general_general"
+      ],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [
+        {
+          "event_type": "spawn",
+          "agent_id": "spawned_general_general",
+          "reason": "Unmet demand detected",
+          "timestamp": "2026-04-19T02:14:19.520903"
+        }
+      ],
+      "pool_size_before": 3,
+      "pool_size_after": 3,
+      "expected_specialist": null
+    },
+    {
+      "task_id": "warmup_reasoning_002",
+      "cluster": "broad_reasoning",
+      "epoch": 1,
+      "success": true,
+      "elapsed_seconds": 66.82627177238464,
+      "agents_activated": [
+        "critic_verifier",
+        "web_research",
+        "code_primary"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": null
+    },
+    {
+      "task_id": "warmup_research_003",
+      "cluster": "broad_research",
+      "epoch": 1,
+      "success": false,
+      "elapsed_seconds": 80.78922629356384,
+      "agents_activated": [
+        "web_research",
+        "critic_verifier",
+        "code_primary"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": null
+    },
+    {
+      "task_id": "api_mig_001",
+      "cluster": "api_migration",
+      "epoch": 2,
+      "success": true,
+      "elapsed_seconds": 86.20945501327515,
+      "agents_activated": [
+        "code_primary",
+        "web_research",
+        "critic_verifier"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": "api_migration_specialist",
+      "used_expected_specialist": false
+    },
+    {
+      "task_id": "api_mig_002",
+      "cluster": "api_migration",
+      "epoch": 2,
+      "success": true,
+      "elapsed_seconds": 102.91686940193176,
+      "agents_activated": [
+        "code_primary",
+        "critic_verifier",
+        "web_research"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": "api_migration_specialist",
+      "used_expected_specialist": false
+    },
+    {
+      "task_id": "api_mig_003",
+      "cluster": "api_migration",
+      "epoch": 2,
+      "success": false,
+      "elapsed_seconds": 87.77498483657837,
+      "agents_activated": [
+        "code_primary",
+        "web_research",
+        "critic_verifier"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": "api_migration_specialist",
+      "used_expected_specialist": false
+    },
+    {
+      "task_id": "warmup_code_004",
+      "cluster": "broad_coding",
+      "epoch": 2,
+      "success": true,
+      "elapsed_seconds": 69.51052689552307,
+      "agents_activated": [
+        "code_primary",
+        "critic_verifier",
+        "web_research"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": null
+    },
+    {
+      "task_id": "api_mig_004",
+      "cluster": "api_migration",
+      "epoch": 3,
+      "success": true,
+      "elapsed_seconds": 82.5241346359253,
+      "agents_activated": [
+        "code_primary",
+        "web_research",
+        "critic_verifier"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": "api_migration_specialist",
+      "used_expected_specialist": false
+    },
+    {
+      "task_id": "api_mig_005",
+      "cluster": "api_migration",
+      "epoch": 3,
+      "success": false,
+      "elapsed_seconds": 75.8391273021698,
+      "agents_activated": [
+        "web_research",
+        "critic_verifier",
+        "code_primary"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": "api_migration_specialist",
+      "used_expected_specialist": false
+    },
+    {
+      "task_id": "api_mig_006",
+      "cluster": "api_migration",
+      "epoch": 3,
+      "success": false,
+      "elapsed_seconds": 88.62162494659424,
+      "agents_activated": [
+        "code_primary",
+        "web_research",
+        "critic_verifier"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": "api_migration_specialist",
+      "used_expected_specialist": false
+    },
+    {
+      "task_id": "api_mig_007",
+      "cluster": "api_migration",
+      "epoch": 4,
+      "success": false,
+      "elapsed_seconds": 90.05428719520569,
+      "agents_activated": [
+        "code_primary",
+        "web_research",
+        "critic_verifier"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": "api_migration_specialist",
+      "used_expected_specialist": false
+    },
+    {
+      "task_id": "api_mig_008",
+      "cluster": "api_migration",
+      "epoch": 4,
+      "success": false,
+      "elapsed_seconds": 72.7518937587738,
+      "agents_activated": [
+        "code_primary",
+        "web_research",
+        "critic_verifier"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": "api_migration_specialist",
+      "used_expected_specialist": false
+    },
+    {
+      "task_id": "security_001",
+      "cluster": "security_audit",
+      "epoch": 5,
+      "success": true,
+      "elapsed_seconds": 80.9154725074768,
+      "agents_activated": [
+        "code_primary",
+        "critic_verifier",
+        "web_research"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": "security_specialist",
+      "used_expected_specialist": false
+    },
+    {
+      "task_id": "security_002",
+      "cluster": "security_audit",
+      "epoch": 5,
+      "success": true,
+      "elapsed_seconds": 78.87384033203125,
+      "agents_activated": [
+        "code_primary",
+        "web_research",
+        "critic_verifier"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": "security_specialist",
+      "used_expected_specialist": false
+    },
+    {
+      "task_id": "security_003",
+      "cluster": "security_audit",
+      "epoch": 5,
+      "success": true,
+      "elapsed_seconds": 92.49959468841553,
+      "agents_activated": [
+        "code_primary",
+        "critic_verifier",
+        "web_research"
+      ],
+      "num_agents": 3,
+      "spawn_recommendations": [],
+      "spawned_agents": [],
+      "probationary_agents_used": [],
+      "promoted_agents": [],
+      "pruned_agents": [],
+      "demoted_agents": [],
+      "lifecycle_events": [],
+      "pool_size_before": 4,
+      "pool_size_after": 4,
+      "expected_specialist": "security_specialist",
+      "used_expected_specialist": false
+    }
+  ],
+  "lifecycle_events": [],
+  "registry_snapshots": [
+    {
+      "epoch": -1,
+      "task_count": 0,
+      "pool_size": 3,
+      "agents": [
+        {
+          "agent_id": "code_primary",
+          "name": "Code Primary",
+          "domain": "coding",
+          "lifecycle_state": "hot"
+        },
+        {
+          "agent_id": "web_research",
+          "name": "Web Research",
+          "domain": "research",
+          "lifecycle_state": "warm"
+        },
+        {
+          "agent_id": "critic_verifier",
+          "name": "Critic Verifier",
+          "domain": "verification",
+          "lifecycle_state": "warm"
+        }
+      ]
+    },
+    {
+      "epoch": 5,
+      "task_count": 20,
+      "pool_size": 4,
+      "agents": [
+        {
+          "agent_id": "code_primary",
+          "name": "Code Primary",
+          "domain": "coding",
+          "lifecycle_state": "hot"
+        },
+        {
+          "agent_id": "web_research",
+          "name": "Web Research",
+          "domain": "research",
+          "lifecycle_state": "warm"
+        },
+        {
+          "agent_id": "critic_verifier",
+          "name": "Critic Verifier",
+          "domain": "verification",
+          "lifecycle_state": "warm"
+        },
+        {
+          "agent_id": "spawned_general_general",
+          "name": "Specialized General Agent",
+          "domain": "general",
+          "lifecycle_state": "probationary"
+        }
+      ]
+    }
+  ],
+  "analysis": {
+    "overall": {
+      "total_spawn_recommendations": 1,
+      "total_spawned": 1,
+      "total_promoted": 0,
+      "total_pruned": 0,
+      "initial_pool_size": 3,
+      "final_pool_size": 4,
+      "pool_growth": 1,
+      "pool_growth_rate": 0.3333333333333333
+    },
+    "spawn_behavior": {
+      "spawn_rate": 0.05
+    },
+    "prune_behavior": {
+      "prune_rate": 0.0
+    },
+    "lifecycle_health": {
+      "spawn_to_promotion_ratio": 0.0,
+      "pool_stability": 0.6666666666666667
+    }
+  }
+}

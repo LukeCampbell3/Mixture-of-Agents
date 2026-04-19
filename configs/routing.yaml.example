@@ -1,0 +1,56 @@
+# Router configuration
+
+# Scoring weights for agent activation
+activation_weights:
+  capability_match: 0.4
+  expected_quality_gain: 0.3
+  calibration_confidence: 0.1
+  user_task_relevance: 0.1
+  token_cost: -0.05
+  latency_cost: -0.05
+
+# Scoring weights for agent spawning
+spawn_weights:
+  recurring_failure_score: 0.3
+  task_cluster_density: 0.2
+  uncertainty_persistence: 0.2
+  disagreement_score: 0.15
+  projected_future_usage: 0.15
+  overlap_penalty: -0.3
+  maintenance_cost: -0.1
+
+# Thresholds
+thresholds:
+  min_activation_score: 0.3
+  min_spawn_score: 0.6
+  max_overlap_for_spawn: 0.7
+  min_cluster_size_for_spawn: 5
+
+# Task classification keywords
+task_keywords:
+  coding_stable:
+    - code
+    - function
+    - class
+    - implement
+    - debug
+    - fix
+  
+  coding_current:
+    - latest
+    - new
+    - recent
+    - current
+  
+  research:
+    - research
+    - find
+    - search
+    - what is
+    - explain
+  
+  planning:
+    - plan
+    - design
+    - architecture
+    - strategy
