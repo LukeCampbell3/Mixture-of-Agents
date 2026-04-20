@@ -39,6 +39,7 @@ class Orchestrator:
         llm_provider: str = "openai",
         llm_model: Optional[str] = None,
         llm_base_url: Optional[str] = None,
+        router_model: Optional[str] = None,
         budget_mode: str = "balanced",
         data_dir: str = "data",
         use_lead_agent_pattern: bool = True,
@@ -48,17 +49,29 @@ class Orchestrator:
         """Initialize orchestrator.
         
         Args:
-            llm_provider: LLM provider ("openai", "anthropic", "ollama", "local")
-            llm_model: Specific model name (optional)
-            llm_base_url: Base URL for local LLM API (optional)
-            budget_mode: Budget mode ("low", "balanced", "thorough")
-            data_dir: Directory for persistent data
+            llm_provider:        LLM provider ("openai", "anthropic", "ollama", "local")
+            llm_model:           Worker model name — used for all agent execution
+            llm_base_url:        Base URL for local LLM API (optional)
+            router_model:        Lightweight model for routing/classification only.
+                                 When None the worker model is reused for routing.
+                                 On constrained hardware set to "qwen2.5:0.5b".
+            budget_mode:         Budget mode ("low", "balanced", "thorough")
+            data_dir:            Directory for persistent data
             use_lead_agent_pattern: Whether to use lead-agent pattern (default: True)
-            enable_parallel: Enable parallel agent execution (default: True)
+            enable_parallel:     Enable parallel agent execution (default: True)
             max_parallel_agents: Maximum parallel agents (default: 3)
         """
-        # Initialize model layer
+        # ── worker model (all agent execution) ──────────────────────────────
         self.llm_client = create_llm_client(llm_provider, llm_model, llm_base_url)
+
+        # ── router model (classification only, may be smaller) ───────────────
+        if router_model and router_model != llm_model:
+            self.router_llm_client = create_llm_client(
+                llm_provider, router_model, llm_base_url
+            )
+        else:
+            self.router_llm_client = self.llm_client   # reuse worker
+
         self.embedding_generator = EmbeddingGenerator()
         self.uncertainty_estimator = UncertaintyEstimator()
         
@@ -72,10 +85,10 @@ class Orchestrator:
         # Initialize calibrator
         self.calibrator = self._initialize_calibrator(data_dir)
         
-        # Initialize components
+        # Initialize components — router uses the lightweight router_llm_client
         self.router = Router(
             self.registry,
-            self.llm_client,
+            self.router_llm_client,   # small model for classification
             self.embedding_generator,
             self.uncertainty_estimator,
             calibrator=self.calibrator

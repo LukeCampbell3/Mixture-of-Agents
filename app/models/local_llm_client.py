@@ -1,71 +1,131 @@
 """Local LLM client for running models like Qwen2.5 locally."""
 
 import json
+import time
 import requests
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Iterator
 from app.models.llm_client import LLMClient
 
 
 class OllamaClient(LLMClient):
-    """Client for Ollama local LLM server."""
-    
+    """Client for Ollama local LLM server — uses streaming for low latency."""
+
     def __init__(self, model: str = "qwen2.5:latest", base_url: str = "http://localhost:11434"):
         self.model = model
         self.base_url = base_url
-    
-    def generate(self, prompt: str, max_tokens: int = 1000, temperature: float = 0.7) -> str:
-        """Generate text from prompt using Ollama."""
-        url = f"{self.base_url}/api/generate"
-        
+
+    # ------------------------------------------------------------------
+    # Internal streaming helper
+    # ------------------------------------------------------------------
+
+    def _stream_chunks(self, prompt: str, max_tokens: int, temperature: float) -> Iterator[dict]:
+        """Yield raw Ollama stream chunks."""
         payload = {
             "model": self.model,
             "prompt": prompt,
-            "stream": False,
+            "stream": True,
             "options": {
                 "temperature": temperature,
-                "num_predict": max_tokens
-            }
+                "num_predict": max_tokens,
+            },
         }
-        
+        with requests.post(
+            f"{self.base_url}/api/generate",
+            json=payload,
+            stream=True,
+            timeout=300,
+        ) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if line:
+                    yield json.loads(line)
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
+
+    def generate(
+        self,
+        prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.7,
+        print_stream: bool = False,
+    ) -> str:
+        """
+        Generate text from prompt.
+
+        When print_stream=True the tokens are printed to stdout as they
+        arrive (used by the CLI for interactive feel), and the full text
+        is still returned as a string.
+        """
+        t_start = time.perf_counter()
+        t_first_token: Optional[float] = None
+        parts: list[str] = []
+        eval_count = 0
+
         try:
-            response = requests.post(url, json=payload, timeout=300)
-            response.raise_for_status()
-            result = response.json()
-            return result.get("response", "")
+            for chunk in self._stream_chunks(prompt, max_tokens, temperature):
+                token = chunk.get("response", "")
+                if token:
+                    if t_first_token is None:
+                        t_first_token = time.perf_counter()
+                    parts.append(token)
+                    if print_stream:
+                        print(token, end="", flush=True)
+                if chunk.get("done"):
+                    eval_count = chunk.get("eval_count", len(parts))
+                    break
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"Ollama API error: {e}")
-    
+
+        if print_stream:
+            print()  # newline after streamed output
+
+        t_end = time.perf_counter()
+        ttft  = (t_first_token - t_start) if t_first_token else None
+        gen_s = (t_end - t_first_token) if t_first_token else (t_end - t_start)
+        tps   = eval_count / gen_s if gen_s > 0 else 0
+
+        # Always emit timing so callers can log it
+        self._last_metrics = {
+            "ttft_s":      round(ttft, 3) if ttft else None,
+            "total_s":     round(t_end - t_start, 3),
+            "tokens":      eval_count,
+            "tok_per_sec": round(tps, 1),
+        }
+
+        return "".join(parts)
+
     def generate_structured(self, prompt: str, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Generate structured output matching schema."""
         schema_str = json.dumps(schema, indent=2)
-        full_prompt = f"{prompt}\n\nRespond with valid JSON matching this schema:\n{schema_str}\n\nJSON:"
-        
+        full_prompt = (
+            f"{prompt}\n\nRespond with valid JSON matching this schema:\n{schema_str}\n\nJSON:"
+        )
         response = self.generate(full_prompt, max_tokens=2000, temperature=0.3)
-        
-        # Extract JSON from response
+
         try:
-            # Try to parse directly
             return json.loads(response)
         except json.JSONDecodeError:
-            # Try to extract JSON from markdown code blocks
             if "```json" in response:
                 json_str = response.split("```json")[1].split("```")[0].strip()
             elif "```" in response:
                 json_str = response.split("```")[1].split("```")[0].strip()
             else:
-                # Try to find JSON object
                 start = response.find("{")
-                end = response.rfind("}") + 1
+                end   = response.rfind("}") + 1
                 if start != -1 and end > start:
                     json_str = response[start:end]
                 else:
                     raise ValueError(f"Could not extract JSON from response: {response[:200]}")
-            
             return json.loads(json_str)
-    
+
     def get_model_name(self) -> str:
-        """Get model identifier."""
         return f"ollama/{self.model}"
+
+    def last_metrics(self) -> dict:
+        """Return timing metrics from the most recent generate() call."""
+        return getattr(self, "_last_metrics", {})
 
 
 class LocalLLMClient(LLMClient):

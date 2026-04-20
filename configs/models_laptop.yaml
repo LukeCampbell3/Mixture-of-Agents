@@ -1,0 +1,38 @@
+# Laptop deployment profile — Profile A (default)
+# Override any value with MOA_* environment variables.
+
+# Models
+router_model: "qwen2.5:0.5b"          # lightweight classifier
+worker_model: "qwen2.5-coder:1.5b"    # main answer-generation model
+fallback_model: "qwen2.5-coder:1.5b"  # used when router model unavailable
+
+# Runtime
+enable_parallel: false
+max_parallel_agents: 1
+default_budget_mode: "balanced"
+max_validation_retries: 1
+
+# Agent policy
+verifier_on_first_pass: false          # only invoke critic after a failed pass
+verifier_on_validation_fail: true
+web_research_on_freshness_only: true   # web agent only when freshness need is high
+
+# Web search (requires OLLAMA_API_KEY)
+web_search:
+  enabled: true
+  trigger_freshness_threshold: 0.45
+  trigger_ambiguity_threshold: 0.55
+  max_results: 3
+
+# Routing
+routing:
+  default_max_agents: 1
+  mixed_task_max_agents: 2            # allow 2 agents on hybrid tasks only
+  verifier_on_first_pass: false
+  verifier_on_validation_fail: true
+
+# Spawned specialists reuse the same worker model —
+# they differ only by prompt / skill-pack / tool profile.
+lifecycle:
+  allow_spawning: true
+  spawned_agent_model: "worker"       # "worker" = inherit worker_model above

@@ -333,7 +333,7 @@ class OllamaManager:
     # Full setup orchestration
     # ------------------------------------------------------------------
 
-    def setup_ollama(self, model_name: str = "qwen2.5:7b") -> bool:
+    def setup_ollama(self, model_name: str = "qwen2.5:1.5b") -> bool:
         """
         Full auto-setup:
           1. Install Ollama if missing
@@ -413,9 +413,11 @@ CONFIG_PATH = os.path.expanduser("~/.claude_agentic_config.json")
 DEFAULT_CONFIG = {
     "configs": {
         "default": {
-            "llm_provider": "ollama",
-            "llm_model": "qwen2.5:7b",
-            "llm_base_url": "http://localhost:11434",
+            # "auto" means: pick the fastest available provider at startup
+            # Override with a specific provider/model if you want to pin one.
+            "llm_provider": "auto",
+            "llm_model": "auto",
+            "llm_base_url": None,
             "budget_mode": "balanced",
             "enable_parallel": True,
             "max_parallel_agents": 3,
@@ -640,89 +642,72 @@ file_edit_mode = FileEditMode()
 # ----------------------------
 
 class AgenticNetworkClient:
-    def __init__(self, ollama_manager: OllamaManager):
+    def __init__(self, ollama_manager: OllamaManager, device_profile: dict):
         self.orchestrator = None
-        self.workspace_context = ""
         self.ollama_manager = ollama_manager
+        self.device_profile = device_profile
         self.ai_enabled = False
+        self.worker_model = device_profile["models"]["worker"]
+        self.router_model = device_profile["models"]["router"]
         self.initialize_orchestrator()
-    
+
     def initialize_orchestrator(self):
-        """Initialize the orchestrator with current config."""
+        """Initialize the orchestrator using the device profile."""
         try:
+            rt = self.device_profile["runtime"]
+
+            # Auto-select provider if still set to "auto"
             active_config = get_active_config()
-            
-            # Check if Ollama is ready
-            if not self.ollama_manager.is_ready():
-                print(Color.yellow("⚠ AI features disabled: Ollama not ready"))
-                print(Color.dim("  Use file operations or install Ollama for AI features"))
-                self.ai_enabled = False
-                return False
-            
-            # Create orchestrator with local model configuration
+            provider = active_config.get("llm_provider", "auto")
+            if provider == "auto":
+                provider = "ollama"
+
             self.orchestrator = Orchestrator(
-                llm_provider=active_config.get("llm_provider", "ollama"),
-                llm_model=active_config.get("llm_model", "qwen2.5:7b"),
-                llm_base_url=active_config.get("llm_base_url", "http://localhost:11434"),
-                budget_mode=active_config.get("budget_mode", "balanced"),
-                enable_parallel=active_config.get("enable_parallel", True),
-                max_parallel_agents=active_config.get("max_parallel_agents", 3)
+                llm_provider=provider,
+                llm_model=self.worker_model,
+                llm_base_url=active_config.get("llm_base_url") or "http://localhost:11434",
+                router_model=self.router_model,
+                budget_mode=rt.get("budget_mode", "balanced"),
+                enable_parallel=rt.get("enable_parallel", False),
+                max_parallel_agents=rt.get("max_parallel_agents", 1),
             )
-            
-            print(Color.green("✅ Agentic Network initialized successfully"))
-            print(Color.dim(f"  Provider: {active_config.get('llm_provider', 'ollama')}"))
-            print(Color.dim(f"  Model: {active_config.get('llm_model', 'qwen2.5:7b')}"))
-            print(Color.dim(f"  Budget: {active_config.get('budget_mode', 'balanced')}"))
+
+            print(Color.green("✅ Agentic Network initialized"))
+            print(Color.dim(f"  Worker : {self.worker_model}"))
+            if self.router_model != self.worker_model:
+                print(Color.dim(f"  Router : {self.router_model}"))
+            print(Color.dim(f"  Parallel: {rt.get('enable_parallel', False)}  "
+                            f"Max agents: {rt.get('max_parallel_agents', 1)}  "
+                            f"Budget: {rt.get('budget_mode', 'balanced')}"))
             self.ai_enabled = True
             return True
-            
+
         except Exception as e:
-            print(Color.red(f"❌ Error initializing Agentic Network: {str(e)}"))
-            print(Color.yellow("⚠ AI features disabled"))
+            print(Color.red(f"❌ Error initializing Agentic Network: {e}"))
             self.ai_enabled = False
             return False
-    
+
     def process_request(self, user_input: str, context: str = "") -> str:
-        """Process a user request through the agentic network."""
-        try:
-            if not self.ai_enabled:
-                return "AI features are disabled. Ollama is not installed or not ready.\nInstall Ollama from: https://ollama.com/\nThen restart the CLI."
-            
-            if not self.orchestrator:
-                if not self.initialize_orchestrator():
-                    return "Error: Could not initialize Agentic Network."
-            
-            # Combine context with user input
-            full_request = f"{context}\n\nUser request: {user_input}"
-            
-            # Run task through orchestrator
-            result = self.orchestrator.run_task(full_request)
-            
-            return result.final_answer
-            
-        except Exception as e:
-            return f"Error processing request: {str(e)}"
-    
-    def get_agent_info(self) -> Dict[str, Any]:
-        """Get information about available agents."""
-        try:
-            if not self.orchestrator:
-                return {"error": "Orchestrator not initialized"}
-            
-            # This would need access to the registry
-            # For now, return basic info
-            active_config = get_active_config()
-            return {
-                "status": "initialized" if self.ai_enabled else "disabled",
-                "ai_enabled": self.ai_enabled,
-                "provider": active_config.get("llm_provider", "ollama"),
-                "model": active_config.get("llm_model", "qwen2.5:7b"),
-                "budget_mode": active_config.get("budget_mode", "balanced"),
-                "parallel_enabled": active_config.get("enable_parallel", True),
-                "max_parallel_agents": active_config.get("max_parallel_agents", 3)
-            }
-        except Exception as e:
-            return {"error": str(e)}
+        if not self.ai_enabled:
+            return ("AI features are disabled. Ollama is not ready.\n"
+                    "Run: ollama serve  then restart the CLI.")
+        if not self.orchestrator:
+            if not self.initialize_orchestrator():
+                return "Error: Could not initialize Agentic Network."
+        full_request = f"{context}\n\nUser request: {user_input}" if context else user_input
+        result = self.orchestrator.run_task(full_request)
+        return result.final_answer
+
+    def get_agent_info(self) -> dict:
+        rt = self.device_profile["runtime"]
+        return {
+            "status":              "initialized" if self.ai_enabled else "disabled",
+            "worker_model":        self.worker_model,
+            "router_model":        self.router_model,
+            "budget_mode":         rt.get("budget_mode"),
+            "parallel_enabled":    rt.get("enable_parallel"),
+            "max_parallel_agents": rt.get("max_parallel_agents"),
+        }
 
 
 # ----------------------------
@@ -734,7 +719,7 @@ def print_banner():
     banner = f"""
 {Color.blue("╔══════════════════════════════════════════════════════════╗")}
 {Color.blue("║")}      {Color.green("Claude Code + Agentic Network v2")}                    {Color.blue("║")}
-{Color.blue("║")}      {Color.dim("Automatic Local Model Setup")}                         {Color.blue("║")}
+{Color.blue("║")}      {Color.dim("Adaptive Local Deployment")}                           {Color.blue("║")}
 {Color.blue("╚══════════════════════════════════════════════════════════╝")}
 """
     print(banner)
@@ -788,33 +773,59 @@ def print_help():
 def main():
     """Main interactive loop."""
     print_banner()
-    
-    # Initialize Ollama manager
+
+    # ── 1. Device profile ────────────────────────────────────────────────────
+    from app.device_profile import load_or_create, print_summary
+    print(Color.blue("Device Profile"))
+    print(Color.blue("=" * 40))
+    profile = load_or_create()
+    print_summary(profile)
+    print()
+
+    worker_model = profile["models"]["worker"]
+    router_model = profile["models"]["router"]
+
+    # ── 2. Ollama setup — only pull what is actually needed ──────────────────
     ollama_manager = OllamaManager()
-    
-    # Get active config to determine model
-    active_config = get_active_config()
-    model_name = active_config.get("llm_model", "qwen2.5:7b")
-    
-    # Auto-setup Ollama
-    print(Color.blue("Auto-Setup Starting..."))
-    ollama_ready = ollama_manager.setup_ollama(model_name)
-    
-    # Initialize agentic network client
-    agentic_client = AgenticNetworkClient(ollama_manager)
-    
-    # Display status
-    print(Color.dim(f"\nWorking directory: {os.getcwd()}"))
-    print(Color.dim(f"Model: {active_config.get('llm_model', 'qwen2.5:7b')}"))
-    print(Color.dim(f"Provider: {active_config.get('llm_provider', 'ollama')}"))
-    print(Color.dim(f"Base URL: {active_config.get('llm_base_url', 'http://localhost:11434')}"))
-    
-    if agentic_client.ai_enabled:
-        print(Color.green("\n✅ AI features: ENABLED"))
+
+    needed_models = list({worker_model, router_model})  # deduplicate
+    print(Color.blue("Ollama Setup"))
+    print(Color.blue("=" * 40))
+
+    # Ensure server is running first
+    if not ollama_manager.check_ollama_installed():
+        print(Color.yellow("⚠ Ollama not found — installing automatically..."))
+        if not ollama_manager.install_ollama():
+            print(Color.red("❌ Could not install Ollama. File operations still available."))
     else:
-        print(Color.yellow("\n⚠ AI features: DISABLED"))
-        print(Color.dim("  File operations available, AI features require Ollama"))
-    
+        print(Color.green("✓ Ollama is installed"))
+
+    if ollama_manager.ollama_installed and not ollama_manager.check_ollama_running():
+        ollama_manager.start_ollama_server()
+    elif ollama_manager.ollama_installed:
+        print(Color.green("✓ Ollama server is running"))
+
+    # Pull only the models this device profile needs
+    if ollama_manager.ollama_running:
+        for model in needed_models:
+            if not ollama_manager.check_model_available(model):
+                print(Color.yellow(f"⚠ Pulling {model}..."))
+                ollama_manager.pull_model(model)
+            else:
+                print(Color.green(f"✓ {model} is available"))
+
+        ollama_manager.setup_complete = True
+        ollama_manager.model_available = True
+
+    # ── 3. Agentic network ───────────────────────────────────────────────────
+    agentic_client = AgenticNetworkClient(ollama_manager, profile)
+
+    # ── 4. Status summary ────────────────────────────────────────────────────
+    print(Color.dim(f"\nWorking directory: {os.getcwd()}"))
+    if agentic_client.ai_enabled:
+        print(Color.green("✅ AI features: ENABLED"))
+    else:
+        print(Color.yellow("⚠ AI features: DISABLED — check Ollama"))
     print()
     
     # Store workspace context

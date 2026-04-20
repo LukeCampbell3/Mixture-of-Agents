@@ -159,3 +159,64 @@ def create_llm_client(provider: str = "openai", model: Optional[str] = None, bas
         return MockLLMClient(model=model or "mock-model")
     else:
         raise ValueError(f"Unknown provider: {provider}")
+
+
+def auto_select_provider() -> Dict[str, str]:
+    """
+    Auto-select the fastest available provider for constrained systems.
+
+    Priority order (fastest first):
+      1. Anthropic API  — claude-haiku-3-5 (fast, cheap, cloud)
+      2. OpenAI API     — gpt-4o-mini (fast, cheap, cloud)
+      3. Ollama local   — qwen2.5:1.5b (smallest viable local model)
+
+    Returns a dict with keys: provider, model, base_url (may be None)
+    """
+    # 1. Anthropic — fastest for coding tasks, no local GPU needed
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
+    if anthropic_key and anthropic_key != "your-anthropic-api-key-here":
+        return {
+            "provider": "anthropic",
+            "model": "claude-haiku-4-5",
+            "base_url": None,
+        }
+
+    # 2. OpenAI — gpt-4o-mini is very fast and cheap
+    openai_key = os.getenv("OPENAI_API_KEY", "").strip()
+    if openai_key and openai_key != "your-openai-api-key-here":
+        return {
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "base_url": None,
+        }
+
+    # 3. Ollama local — use the smallest model that still works well
+    try:
+        import requests as _req
+        resp = _req.get("http://localhost:11434/api/tags", timeout=3)
+        if resp.status_code == 200:
+            models = [m.get("name", "") for m in resp.json().get("models", [])]
+            # Prefer smallest models first for speed on constrained hardware
+            for preferred in ["qwen2.5:1.5b", "qwen2.5:3b", "qwen2.5:7b", "qwen2.5:latest"]:
+                if any(preferred in m for m in models):
+                    return {
+                        "provider": "ollama",
+                        "model": preferred,
+                        "base_url": "http://localhost:11434",
+                    }
+            # Fall back to whatever is available
+            if models:
+                return {
+                    "provider": "ollama",
+                    "model": models[0],
+                    "base_url": "http://localhost:11434",
+                }
+    except Exception:
+        pass
+
+    # Default — will prompt user to configure
+    return {
+        "provider": "ollama",
+        "model": "qwen2.5:1.5b",
+        "base_url": "http://localhost:11434",
+    }
