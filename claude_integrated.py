@@ -31,6 +31,7 @@ from typing import Dict, List, Any, Optional
 from app.orchestrator import Orchestrator
 from app.schemas.run_state import RunState
 from app.models.llm_client import create_llm_client
+from app.tools.filesystem import FilesystemExecutor, FileOperation
 
 # ANSI color codes for colored terminal output
 class Color:
@@ -649,6 +650,9 @@ class AgenticNetworkClient:
         self.ai_enabled = False
         self.worker_model = device_profile["models"]["worker"]
         self.router_model = device_profile["models"]["router"]
+        # Conversation history: list of {"role": "user"|"assistant", "content": str}
+        self.history: list = []
+        self.max_history_turns = 6   # keep last 6 exchanges (12 messages)
         self.initialize_orchestrator()
 
     def initialize_orchestrator(self):
@@ -664,11 +668,13 @@ class AgenticNetworkClient:
             # Active config overrides device profile for concurrency settings
             enable_parallel = active_config.get("enable_parallel", rt.get("enable_parallel", True))
             max_agents      = active_config.get("max_parallel_agents", rt.get("max_parallel_agents", 2))
+            max_tokens      = active_config.get("max_tokens", rt.get("max_tokens", 800))
 
             # Coerce types (config values are stored as strings via /config set)
             if isinstance(enable_parallel, str):
                 enable_parallel = enable_parallel.lower() not in ("false", "0", "off")
             max_agents = int(max_agents)
+            max_tokens = int(max_tokens)
 
             self.orchestrator = Orchestrator(
                 llm_provider=provider,
@@ -678,6 +684,7 @@ class AgenticNetworkClient:
                 budget_mode=rt.get("budget_mode", "balanced"),
                 enable_parallel=enable_parallel,
                 max_parallel_agents=max_agents,
+                max_tokens=max_tokens,
             )
 
             print(Color.green("✅ Agentic Network initialized"))
@@ -695,16 +702,60 @@ class AgenticNetworkClient:
             self.ai_enabled = False
             return False
 
-    def process_request(self, user_input: str, context: str = "") -> str:
+    def process_request(self, user_input: str, context: str = "",
+                        workspace_root: str = ".") -> tuple:
+        """Returns (answer_text, pending_tool_calls)."""
         if not self.ai_enabled:
             return ("AI features are disabled. Ollama is not ready.\n"
-                    "Run: ollama serve  then restart the CLI.")
+                    "Run: ollama serve  then restart the CLI.", [])
         if not self.orchestrator:
             if not self.initialize_orchestrator():
-                return "Error: Could not initialize Agentic Network."
-        full_request = f"{context}\n\nUser request: {user_input}" if context else user_input
-        result = self.orchestrator.run_task(full_request)
-        return result.final_answer
+                return ("Error: Could not initialize Agentic Network.", [])
+
+        # Build conversation context from history
+        history_block = self._build_history_block()
+
+        # Combine: workspace context + current request (history goes to orchestrator separately)
+        parts = []
+        if context:
+            parts.append(f"WORKSPACE CONTEXT:\n{context}")
+        parts.append(user_input)
+        full_request = "\n\n".join(parts)
+
+        result = self.orchestrator.run_task(
+            full_request,
+            workspace_root=workspace_root,
+            conversation_history=history_block,
+        )
+        answer = result.final_answer
+
+        # Record this turn in history
+        self.history.append({"role": "user",      "content": user_input})
+        self.history.append({"role": "assistant",  "content": answer or ""})
+        # Trim to max_history_turns exchanges
+        max_msgs = self.max_history_turns * 2
+        if len(self.history) > max_msgs:
+            self.history = self.history[-max_msgs:]
+
+        return answer, getattr(result, "pending_tool_calls", [])
+
+    def _build_history_block(self) -> str:
+        """Format conversation history as a context block for the LLM."""
+        if not self.history:
+            return ""
+        lines = ["CONVERSATION HISTORY (most recent last):"]
+        for msg in self.history:
+            role = "User" if msg["role"] == "user" else "Assistant"
+            # Truncate long assistant responses to keep context manageable
+            content = msg["content"]
+            if msg["role"] == "assistant" and len(content) > 600:
+                content = content[:600] + "... [truncated]"
+            lines.append(f"{role}: {content}")
+        return "\n".join(lines)
+
+    def clear_history(self):
+        """Clear conversation history."""
+        self.history = []
 
     def get_agent_info(self) -> dict:
         rt = self.device_profile["runtime"]
@@ -761,9 +812,16 @@ def print_help():
         },
         "Agentic Network": {
             "/agents": "Show agent status and full registry",
-            "/reload": "Reload agentic network configuration",
+            "/reload": "Reload config and clear conversation history",
             "/test": "Test agentic network with a simple request",
-            "/concurrency [n|off]": "Set parallel agents (e.g. /concurrency 3) or disable"
+            "/concurrency [n|off]": "Set parallel agents (e.g. /concurrency 3) or disable",
+            "/history": "Show conversation history",
+            "/new, /clear": "Clear conversation history and start fresh",
+        },
+        "File System (AI-driven)": {
+            "Just ask": "e.g. 'create a FastAPI app in src/main.py'",
+            "/context [path]": "Load workspace files into AI context",
+            "/fs": "Show workspace root and pending operations",
         },
         "Ollama Management": {
             "/ollama status": "Check Ollama status",
@@ -945,7 +1003,8 @@ def main():
         if cmd == "/reload":
             print(Color.yellow("Reloading Agentic Network configuration..."))
             if agentic_client.initialize_orchestrator():
-                print(Color.green("Configuration reloaded successfully"))
+                agentic_client.clear_history()
+                print(Color.green("Configuration reloaded and conversation history cleared."))
             else:
                 print(Color.red("Failed to reload configuration"))
             continue
@@ -986,9 +1045,28 @@ def main():
 
         if cmd == "/test":
             print(Color.yellow("Testing Agentic Network with simple request..."))
-            test_response = agentic_client.process_request("Say hello and confirm you're working")
+            test_response, _ = agentic_client.process_request("Say hello and confirm you're working")
             print(Color.blue("\nTest Response:"))
             print(test_response)
+            continue
+
+        if cmd in ("/new", "/clear"):
+            agentic_client.clear_history()
+            print(Color.green("Conversation history cleared. Starting fresh."))
+            continue
+
+        if cmd in ("/history",):
+            if not agentic_client.history:
+                print(Color.dim("No conversation history yet."))
+            else:
+                print(Color.green(f"Conversation history ({len(agentic_client.history)//2} turns):"))
+                for i, msg in enumerate(agentic_client.history):
+                    role_color = Color.blue if msg["role"] == "user" else Color.green
+                    label = "You" if msg["role"] == "user" else "AI "
+                    content = msg["content"]
+                    if len(content) > 200:
+                        content = content[:200] + "..."
+                    print(f"  {role_color(label)}: {content}")
             continue
 
         # Configuration commands
@@ -1021,7 +1099,7 @@ def main():
                     print(Color.green(f"Configuration updated: {key} = {value}"))
                     # Reload orchestrator if any runtime setting changed
                     if key in ["llm_provider", "llm_model", "llm_base_url", "budget_mode",
-                               "enable_parallel", "max_parallel_agents"]:
+                               "enable_parallel", "max_parallel_agents", "max_tokens"]:
                         print(Color.yellow("Reloading Agentic Network..."))
                         agentic_client.initialize_orchestrator()
                 else:
@@ -1143,12 +1221,76 @@ def main():
             print_tree(path)
             continue
 
+        if cmd == "/fs":
+            print(Color.green(f"Workspace root: {os.getcwd()}"))
+            print(Color.dim("  The AI will write files relative to this directory."))
+            print(Color.dim("  Use /context to load files into AI context."))
+            print(Color.dim("  Use /cd to change the workspace root."))
+            continue
+
         # If not a built-in command, send to agentic network
         print(Color.blue("Processing with Agentic Network..."))
-        response = agentic_client.process_request(cmd, workspace_context)
+        response, pending_ops = agentic_client.process_request(
+            cmd, workspace_context, workspace_root=os.getcwd()
+        )
         print(Color.blue("\nAssistant:"))
         print(response)
         print()
+
+        # ── File operation approval flow ──────────────────────────────────
+        if pending_ops:
+            executor = FilesystemExecutor(workspace_root=os.getcwd())
+            print(Color.yellow(f"\n  {len(pending_ops)} file operation(s) proposed:\n"))
+
+            approved_ops = []
+            for i, op in enumerate(pending_ops, 1):
+                print(Color.blue(f"  [{i}/{len(pending_ops)}] {op.tool.upper()}: {op.path}"))
+                if op.description:
+                    print(Color.dim(f"  {op.description}"))
+
+                # Show diff/preview
+                preview = executor.preview(op)
+                if preview and preview != "(no changes)":
+                    # Colour the diff lines
+                    for line in preview.splitlines():
+                        if line.startswith("+") and not line.startswith("+++"):
+                            print(Color.green(f"  {line}"))
+                        elif line.startswith("-") and not line.startswith("---"):
+                            print(Color.red(f"  {line}"))
+                        else:
+                            print(Color.dim(f"  {line}"))
+                print()
+
+                # Ask for approval
+                try:
+                    choice = input(
+                        Color.yellow("  Apply? [y]es / [n]o / [a]ll / [q]uit: ")
+                    ).strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    choice = "q"
+
+                if choice in ("a", "all"):
+                    approved_ops.extend(pending_ops[i - 1:])
+                    print(Color.green(f"  Approved all remaining {len(pending_ops)-i+1} operation(s)."))
+                    break
+                elif choice in ("y", "yes", ""):
+                    approved_ops.append(op)
+                elif choice in ("q", "quit"):
+                    print(Color.yellow("  Aborted remaining operations."))
+                    break
+                else:
+                    print(Color.dim("  Skipped."))
+
+            # Execute approved operations
+            if approved_ops:
+                print()
+                results = executor.execute_all(approved_ops)
+                for res in results:
+                    if res.success:
+                        print(Color.green(f"  ✓ {res.message}"))
+                    else:
+                        print(Color.red(f"  ✗ {res.message}"))
+                print()
 
 
 if __name__ == "__main__":

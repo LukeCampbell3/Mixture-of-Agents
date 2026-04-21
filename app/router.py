@@ -96,105 +96,71 @@ class Router:
         return task_frame
     
     def route(self, task_frame: TaskFrame, max_agents: int = 3) -> RoutingDecision:
-        """Select agents for task execution with calibrated confidence.
-        
-        Args:
-            task_frame: Structured task representation
-            max_agents: Maximum number of agents to activate
-        
-        Returns:
-            RoutingDecision with selected and suppressed agents
+        """Select agents for task execution.
+
+        Selection strategy:
+        - Score all routable agents.
+        - Always select the top-scoring agent (the specialist or best match).
+        - Fill remaining slots up to max_agents with agents that score above
+          a low relevance floor (0.15), so genuinely irrelevant agents are
+          excluded but good supporting agents are included.
+        - Never select fewer than min(max_agents, 1) agents.
         """
-        # Get routable agents
         candidates = self.registry.get_routable_agents()
-        
-        # Check for oracle subset from counterfactual store
+
         oracle_subset = None
         if self.counterfactual_store:
             oracle_subset = self.counterfactual_store.get_oracle_subset(task_frame.task_id)
-        
-        # Score each candidate
+
+        # Score every candidate
         agent_scores = []
         for agent in candidates:
             score = self._score_agent(agent, task_frame, oracle_subset)
             agent_scores.append(score)
-        
-        # Sort by activation score
+
         agent_scores.sort(key=lambda x: x.activation_score, reverse=True)
-        
-        # Select top agents within budget with top-k cap
+
+        # Relevance floor — only exclude agents that are clearly irrelevant
+        RELEVANCE_FLOOR = 0.15
+
         selected = []
         suppressed = []
-        
-        # Top-k routing: consider only top candidates
-        top_k = min(5, len(agent_scores))
-        top_candidates = agent_scores[:top_k]
-        
-        # Dynamic threshold based on task characteristics
-        base_threshold = 0.3
-        
-        # Lower threshold for complex/uncertain tasks to encourage collaboration
-        if task_frame.initial_uncertainty > 0.5:
-            base_threshold = 0.2  # Very uncertain - need multiple perspectives
-        elif task_frame.difficulty_estimate > 0.6:
-            base_threshold = 0.25  # Hard task - benefit from collaboration
-        
-        # For hybrid/unknown tasks, be even more aggressive
-        task_type_str = task_frame.task_type if isinstance(task_frame.task_type, str) else task_frame.task_type.value
-        if "hybrid" in task_type_str or task_type_str == "unknown":
-            base_threshold = 0.2  # Encourage multi-agent for complex tasks
-        
-        # Ensure at least 2 agents for tasks that could benefit from collaboration
-        min_agents_for_collaboration = 1
-        if task_frame.initial_uncertainty > 0.4 or task_frame.difficulty_estimate > 0.5:
-            min_agents_for_collaboration = 2
-        
-        for score in top_candidates:
-            threshold = base_threshold
-            
-            # If we haven't met minimum collaboration threshold, be more lenient
-            if len(selected) < min_agents_for_collaboration:
-                threshold = max(0.15, base_threshold - 0.1)
-            
-            if len(selected) < max_agents and score.activation_score > threshold:
+
+        for score in agent_scores:
+            if len(selected) >= max_agents:
+                suppressed.append({"agent_id": score.agent_id, "reason": "budget_exclusion"})
+                continue
+
+            # Always take the top agent regardless of score
+            if len(selected) == 0:
+                selected.append(score.agent_id)
+            elif score.activation_score >= RELEVANCE_FLOOR:
                 selected.append(score.agent_id)
             else:
-                suppressed.append({
-                    "agent_id": score.agent_id,
-                    "reason": score.reason if score.activation_score <= threshold else "budget_exclusion"
-                })
-        
-        # Suppress remaining candidates
-        for score in agent_scores[top_k:]:
-            suppressed.append({
-                "agent_id": score.agent_id,
-                "reason": "below_top_k_threshold"
-            })
-        
-        # Build routing decision
+                suppressed.append({"agent_id": score.agent_id, "reason": "below_relevance_floor"})
+
         decision = RoutingDecision(
             task_id=task_frame.task_id,
             candidate_agents=agent_scores,
             selected_agents=selected,
             suppressed_agents=suppressed,
             budget_plan={
-                "expected_tokens": len(selected) * 1000,
-                "expected_latency": len(selected) * 2.0
+                "expected_tokens": len(selected) * 400,
+                "expected_latency": len(selected) * 30.0,
             },
             routing_reasons=[
-                f"Selected {len(selected)} agents based on calibrated confidence and counterfactual lift",
+                f"Selected {len(selected)}/{max_agents} agents (relevance floor={RELEVANCE_FLOOR})",
                 f"Task type: {task_frame.task_type}",
                 f"Uncertainty: {task_frame.initial_uncertainty:.2f}",
-                f"Oracle guidance: {'Yes' if oracle_subset else 'No'}"
             ],
             uncertainty_summary=f"Initial uncertainty: {task_frame.initial_uncertainty:.2f}",
             spawn_recommendation=None,
             no_spawn_reason="Existing agents sufficient for task",
-            arbitration_needed=len(selected) > 1
+            arbitration_needed=len(selected) > 1,
         )
-        
+
         return decision
-    
+
     def _classify_task_type(self, request: str) -> TaskType:
         """Classify task into category."""
         request_lower = request.lower()

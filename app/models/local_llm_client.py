@@ -104,7 +104,7 @@ class OllamaClient(LLMClient):
         full_prompt = (
             f"{prompt}\n\nRespond with valid JSON matching this schema:\n{schema_str}\n\nJSON:"
         )
-        response = self.generate(full_prompt, max_tokens=600, temperature=0.3)
+        response = self.generate(full_prompt, max_tokens=1000, temperature=0.3)
 
         try:
             return json.loads(response)

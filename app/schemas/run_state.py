@@ -53,6 +53,9 @@ class RunState(BaseModel):
     final_state: str = "running"  # running, success, partial_success, failure
     final_answer: Optional[str] = None
     
+    # File operations emitted by agents — awaiting user approval before execution
+    pending_tool_calls: List[Any] = Field(default_factory=list)
+    
     # Lifecycle tracking (NEW)
     spawn_recommendations: List[Dict[str, Any]] = Field(default_factory=list)
     spawned_agents: List[str] = Field(default_factory=list)

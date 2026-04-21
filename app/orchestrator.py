@@ -12,6 +12,7 @@ from app.models.uncertainty import UncertaintyEstimator
 from app.agents.code_primary import CodePrimaryAgent
 from app.agents.web_research import WebResearchAgent
 from app.agents.critic_verifier import CriticVerifierAgent
+from app.tools.filesystem import FilesystemExecutor, parse_tool_calls
 from app.storage.registry_store import RegistryStore
 from app.storage.artifact_store import ArtifactStore
 from app.calibration import ThreeLevelCalibrator
@@ -44,7 +45,8 @@ class Orchestrator:
         data_dir: str = "data",
         use_lead_agent_pattern: bool = True,
         enable_parallel: bool = True,
-        max_parallel_agents: int = 3
+        max_parallel_agents: int = 3,
+        max_tokens: int = 800
     ):
         """Initialize orchestrator.
         
@@ -60,6 +62,7 @@ class Orchestrator:
             use_lead_agent_pattern: Whether to use lead-agent pattern (default: True)
             enable_parallel:     Enable parallel agent execution (default: True)
             max_parallel_agents: Maximum parallel agents (default: 3)
+            max_tokens:          Max tokens per agent call (default: 800)
         """
         # ── worker model (all agent execution) ──────────────────────────────
         self.llm_client = create_llm_client(llm_provider, llm_model, llm_base_url)
@@ -109,6 +112,7 @@ class Orchestrator:
         # Budget mode + device-profile agent cap
         self.budget_mode = budget_mode
         self.max_parallel_agents = max_parallel_agents  # used as hard cap in run_task
+        self.max_tokens = max_tokens  # per-agent token budget
         
         # Lifecycle manager
         self.lifecycle_manager = LifecycleManager(
@@ -141,13 +145,18 @@ class Orchestrator:
         
         return calibrator
     
-    def run_task(self, user_request: str) -> RunState:
+    def run_task(self, user_request: str, workspace_root: str = ".",
+                 conversation_history: str = "") -> RunState:
         """Execute a task through the agent network.
 
-        Before routing, checks whether any existing agent is a good fit.
-        If not, spawns a specialist on-demand using the LLM, registers it,
-        and routes to it immediately — no waiting for history to accumulate.
+        Args:
+            user_request:          The user's natural-language request.
+            workspace_root:        Absolute path to the workspace root.
+            conversation_history:  Pre-formatted history block to inject as
+                                   shared context for all agents.
         """
+        self.workspace_root = workspace_root
+        self._conversation_history = conversation_history
         # Initialize budget controller — honour device profile's agent cap
         budget_controller = BudgetController(
             mode=self.budget_mode,
@@ -207,6 +216,9 @@ class Orchestrator:
         
         # Update run state
         run_state.final_answer = final_answer
+        # Collect all tool calls emitted by agents during this run
+        run_state.pending_tool_calls = getattr(self, "_pending_tool_calls", [])
+        self._pending_tool_calls = []  # reset for next run
         run_state.validation_report = validation_report.model_dump()
         run_state.final_state = validation_report.validation_state if isinstance(validation_report.validation_state, str) else validation_report.validation_state.value
         run_state.completed_at = datetime.utcnow().isoformat()
@@ -393,7 +405,10 @@ class Orchestrator:
         task_context = {
             "task_frame": task_frame,
             "constraints": task_frame.hard_constraints,
-            "available_tools": lead_agent_spec.tools
+            "available_tools": lead_agent_spec.tools,
+            "max_tokens": self.max_tokens,
+            "shared_context": getattr(self, "_conversation_history", ""),
+            "workspace_root": getattr(self, "workspace_root", "."),
         }
         
         lead_output = lead_agent.execute(task_context)
@@ -416,7 +431,8 @@ class Orchestrator:
                 "task_frame": task_frame,
                 "lead_output": lead_output["output"],
                 "role": role.value,
-                "available_tools": agent_spec.tools
+                "available_tools": agent_spec.tools,
+                "max_tokens": self.max_tokens,
             }
             
             output = agent.execute(role_context)
@@ -461,7 +477,12 @@ class Orchestrator:
         
         # Initialize shared context for parallel execution
         shared_context_obj = SharedContext()
-        shared_context_text = f"Task: {task_frame.normalized_request}\n\n"
+        history = getattr(self, "_conversation_history", "")
+        shared_context_text = (
+            f"{history}\n\nTask: {task_frame.normalized_request}\n\n"
+            if history else
+            f"Task: {task_frame.normalized_request}\n\n"
+        )
         shared_context_obj.update("task_description", task_frame.normalized_request)
         
         # Find relevant skill packs for this task
@@ -511,7 +532,9 @@ class Orchestrator:
                     "shared_context": shared_context_text,
                     "constraints": task_frame.hard_constraints,
                     "available_tools": agent_spec.tools,
-                    "iteration": 1
+                    "iteration": 1,
+                    "max_tokens": self.max_tokens,
+                    "workspace_root": getattr(self, "workspace_root", "."),
                 }
                 
                 tasks.append(AgentTask(
@@ -535,6 +558,7 @@ class Orchestrator:
                     agent_spec = self.registry.get_agent(result.agent_id)
                     shared_context_text += f"\n## {agent_spec.name if agent_spec else result.agent_id} Analysis:\n{result.output['output']}\n"
                 budget_controller.deactivate_agent()
+            self._collect_tool_calls(agent_outputs)
         
         else:
             # SEQUENTIAL EXECUTION (fallback or single agent)
@@ -565,10 +589,14 @@ class Orchestrator:
                     "available_tools": agent_spec.tools,
                     "other_agent_outputs": agent_outputs,
                     "iteration": 1,
-                    "skill_packs": agent_skill_packs
+                    "skill_packs": agent_skill_packs,
+                    "max_tokens": self.max_tokens,
+                    "workspace_root": getattr(self, "workspace_root", "."),
                 }
                 
                 output = agent.execute(task_context)
+                agent_outputs[agent_id] = output
+                self._collect_tool_calls({agent_id: output})
                 agent_outputs[agent_id] = output
                 
                 # Update shared context IMMEDIATELY
@@ -628,7 +656,8 @@ class Orchestrator:
                     "conflicts_detected": conflicts,
                     "arbitration_results": arbitration_results,
                     "iteration": 2,
-                    "refinement_mode": True
+                    "refinement_mode": True,
+                    "max_tokens": self.max_tokens,
                 }
                 
                 refinement_tasks.append(AgentTask(
@@ -717,6 +746,14 @@ class Orchestrator:
         
         return selected
     
+    def _collect_tool_calls(self, agent_outputs: dict) -> None:
+        """Accumulate FileOperation objects from all agent outputs."""
+        if not hasattr(self, "_pending_tool_calls"):
+            self._pending_tool_calls = []
+        for output in agent_outputs.values():
+            calls = output.get("tool_calls", [])
+            self._pending_tool_calls.extend(calls)
+
     def _maybe_spawn_specialist(self, task_frame) -> None:
         """
         Spawn a specialist agent on-demand when the task has clear specialist
@@ -803,8 +840,13 @@ class Orchestrator:
         "blockchain":     ["solidity", "smart contract", "ethereum", "web3", "nft",
                            "defi", "blockchain", "wallet", "token", "erc20"],
         "ml_engineering": ["pytorch", "tensorflow", "keras", "model training", "fine-tune",
-                           "neural network", "transformer model", "llm", "embedding",
-                           "inference", "gpu", "cuda", "huggingface"],
+                           "fine tuning", "neural network", "transformer model", "transformer node",
+                           "switch transformer", "mixture of experts", "moe", "attention mechanism",
+                           "self-attention", "multi-head attention", "feed forward network",
+                           "activation function", "softmax", "layer norm", "batch norm",
+                           "llm", "embedding", "inference", "gpu", "cuda", "huggingface",
+                           "backpropagation", "gradient descent", "loss function", "epoch",
+                           "bert", "gpt", "t5", "vit", "diffusion model", "autoencoder"],
     }
 
     def _detect_specialist_domain(self, task_text: str) -> Optional[str]:
@@ -949,7 +991,7 @@ Focus on creating an answer that is MORE COMPLETE, MORE ACCURATE, and MORE INSIG
 Final synthesized answer:"""
         
         try:
-            final_answer = self.llm_client.generate(synthesis_prompt, max_tokens=500, temperature=0.4)
+            final_answer = self.llm_client.generate(synthesis_prompt, max_tokens=1000, temperature=0.4)
         except Exception:
             # Fallback: return the best single-agent output
             final_answer = max(agent_outputs.values(), key=lambda o: len(o.get("output", "")))["output"]
