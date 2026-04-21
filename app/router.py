@@ -161,6 +161,143 @@ class Router:
 
         return decision
 
+    def route_primary(self, task_frame: TaskFrame) -> RoutingDecision:
+        """Return only the single best agent for lazy-chain execution.
+
+        The caller runs this agent first, then calls needs_escalation() on
+        its output to decide whether to warm up additional agents.
+        """
+        candidates = self.registry.get_routable_agents()
+
+        oracle_subset = None
+        if self.counterfactual_store:
+            oracle_subset = self.counterfactual_store.get_oracle_subset(task_frame.task_id)
+
+        agent_scores = [
+            self._score_agent(a, task_frame, oracle_subset) for a in candidates
+        ]
+        agent_scores.sort(key=lambda x: x.activation_score, reverse=True)
+
+        best = agent_scores[0].agent_id if agent_scores else "code_primary"
+        suppressed = [
+            {"agent_id": s.agent_id, "reason": "lazy_chain_deferred"}
+            for s in agent_scores[1:]
+        ]
+
+        return RoutingDecision(
+            task_id=task_frame.task_id,
+            candidate_agents=agent_scores,
+            selected_agents=[best],
+            suppressed_agents=suppressed,
+            budget_plan={"expected_tokens": 400, "expected_latency": 30.0},
+            routing_reasons=[
+                f"Lazy-chain primary: {best} (score {agent_scores[0].activation_score:.2f})",
+                f"Task type: {task_frame.task_type}",
+            ],
+            uncertainty_summary=f"Initial uncertainty: {task_frame.initial_uncertainty:.2f}",
+            spawn_recommendation=None,
+            no_spawn_reason="Lazy chain — escalate only if needed",
+            arbitration_needed=False,
+        )
+
+    def needs_escalation(self, output: str, task_frame: TaskFrame) -> Tuple[bool, List[str]]:
+        """Inspect a primary agent's output for signals that sub-agents are needed.
+
+        Returns (should_escalate, list_of_agent_ids_to_add).
+
+        Escalation triggers:
+        - Explicit uncertainty phrases ("I'm not sure", "you may want to verify", etc.)
+        - Output is very short relative to task complexity
+        - Task type is HYBRID and output lacks one of the two required parts
+        - Output contains domain keywords that belong to a different specialist
+        """
+        text = output.lower()
+        task_type_str = (
+            task_frame.task_type
+            if isinstance(task_frame.task_type, str)
+            else task_frame.task_type.value
+        )
+
+        # ── Uncertainty phrases ──────────────────────────────────────────────
+        UNCERTAINTY_PHRASES = [
+            "i'm not sure", "i am not sure", "not certain", "you may want to verify",
+            "you should verify", "i cannot confirm", "i don't know", "unclear",
+            "consult a", "double-check", "double check", "may be incorrect",
+            "might be wrong", "please verify", "i would recommend checking",
+        ]
+        has_uncertainty = any(p in text for p in UNCERTAINTY_PHRASES)
+
+        # ── Short output on a complex task ───────────────────────────────────
+        is_short = len(output.split()) < 60 and task_frame.difficulty_estimate > 0.5
+
+        # ── Hybrid task missing a part ───────────────────────────────────────
+        hybrid_gap = False
+        if "hybrid" in task_type_str:
+            has_code  = "```" in output
+            has_prose = len([w for w in output.split() if w.isalpha()]) > 40
+            hybrid_gap = not (has_code and has_prose)
+
+        # ── Domain keywords that belong to a different specialist ────────────
+        DOMAIN_ESCALATION = {
+            "web_research": [
+                "latest", "current", "recent", "as of 2024", "as of 2025",
+                "according to", "documentation says", "official docs",
+            ],
+            "critic_verifier": [
+                "should be reviewed", "needs testing", "edge case",
+                "potential bug", "security concern", "race condition",
+            ],
+        }
+        escalate_to: List[str] = []
+        for agent_id, phrases in DOMAIN_ESCALATION.items():
+            if any(p in text for p in phrases):
+                escalate_to.append(agent_id)
+
+        # ── Decision ─────────────────────────────────────────────────────────
+        should_escalate = has_uncertainty or is_short or hybrid_gap or bool(escalate_to)
+
+        if should_escalate and not escalate_to:
+            # Default escalation: add critic_verifier for quality check
+            escalate_to = ["critic_verifier"]
+
+        return should_escalate, escalate_to
+
+    def build_sub_task(self, primary_output: str, task_frame: TaskFrame, sub_agent_id: str) -> str:
+        """Build a focused sub-task prompt for a sub-agent.
+
+        The sub-agent receives only what it needs — the primary output as
+        context and a narrow instruction matching its role — not the full
+        original prompt with all its overhead.
+        """
+        task = task_frame.normalized_request
+
+        if sub_agent_id == "critic_verifier":
+            return (
+                f"Review the following response to this task and identify any issues:\n\n"
+                f"TASK: {task}\n\n"
+                f"RESPONSE TO REVIEW:\n{primary_output}\n\n"
+                f"Identify: factual errors, missing edge cases, security issues, "
+                f"or logical gaps. Be concise. If the response is correct, say so."
+            )
+
+        if sub_agent_id == "web_research":
+            return (
+                f"The following response may contain outdated information. "
+                f"Verify or supplement it with current facts.\n\n"
+                f"TASK: {task}\n\n"
+                f"RESPONSE TO VERIFY:\n{primary_output}\n\n"
+                f"Provide only corrections or additions. Do not repeat what is already correct."
+            )
+
+        # Generic sub-task for specialist agents
+        domain = sub_agent_id.replace("specialist_", "").replace("_", " ")
+        return (
+            f"You are a {domain} specialist. The following response needs your expertise.\n\n"
+            f"TASK: {task}\n\n"
+            f"PRIMARY RESPONSE:\n{primary_output}\n\n"
+            f"Add or correct anything in your domain ({domain}). Be concise."
+        )
+
     def _classify_task_type(self, request: str) -> TaskType:
         """Classify task into category."""
         request_lower = request.lower()

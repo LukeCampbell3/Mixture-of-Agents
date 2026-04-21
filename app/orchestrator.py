@@ -223,29 +223,16 @@ class Orchestrator:
             pool_size_before=len(self.registry.agents)  # Track pool size
         )
         
-        # Route to agents
-        routing_decision = self.router.route(
+        # Route to agents — lazy chain: start with primary only
+        routing_decision = self.router.route_primary(task_frame)
+
+        # Execute via lazy chain (primary first, sub-agents only if needed)
+        final_answer = self._execute_lazy_chain(
             task_frame,
-            max_agents=budget_controller.get_remaining_agents()
+            routing_decision,
+            budget_controller,
+            run_state,
         )
-        
-        # Use lead-agent pattern if enabled
-        if self.use_lead_agent_pattern and len(routing_decision.selected_agents) > 1:
-            final_answer = self._execute_with_lead_pattern(
-                task_frame,
-                routing_decision,
-                budget_controller,
-                run_state,
-                task_family
-            )
-        else:
-            # Fall back to traditional execution
-            final_answer = self._execute_traditional(
-                task_frame,
-                routing_decision,
-                budget_controller,
-                run_state
-            )
         
         # Validate output
         agent_outputs = {agent_id: {"output": final_answer} for agent_id in run_state.active_agents}
@@ -409,6 +396,143 @@ class Orchestrator:
         # Return history from lifecycle manager
         return self.lifecycle_manager.task_history
     
+    def _execute_lazy_chain(
+        self,
+        task_frame,
+        routing_decision,
+        budget_controller,
+        run_state,
+    ) -> str:
+        """Lazy-chain execution: run the primary agent, then escalate only if needed.
+
+        Cost model:
+        - Simple tasks: 1 agent, 1 LLM call.
+        - Uncertain/complex tasks: primary + 1-2 focused sub-agents.
+        - Sub-agents receive a narrow sub-task (not the full prompt) so their
+          token budget is much smaller than a full parallel fan-out.
+
+        The primary agent's output is inspected for escalation signals before
+        any additional agents are warmed up.
+        """
+        history = getattr(self, "_conversation_history", "")
+        workspace = getattr(self, "workspace_root", ".")
+
+        # ── Step 1: Run primary agent ────────────────────────────────────────
+        primary_id = routing_decision.selected_agents[0]
+        budget_controller.activate_agent()
+        run_state.active_agents.append(primary_id)
+
+        primary_spec = self.registry.get_agent(primary_id)
+        primary_agent = self._create_agent_instance(primary_spec, history)
+
+        shared_ctx = (
+            f"{history}\n\nTask: {task_frame.normalized_request}\n\n"
+            if history else
+            f"Task: {task_frame.normalized_request}\n\n"
+        )
+
+        primary_output = primary_agent.execute({
+            "task_frame": task_frame,
+            "shared_context": shared_ctx,
+            "constraints": task_frame.hard_constraints,
+            "available_tools": primary_spec.tools,
+            "iteration": 1,
+            "max_tokens": self.max_tokens,
+            "workspace_root": workspace,
+        })
+        budget_controller.deactivate_agent()
+        self._collect_tool_calls({primary_id: primary_output})
+
+        primary_text = primary_output.get("output", "")
+        print(f"  [chain] Primary: {primary_id}")
+
+        # ── Step 2: Check if escalation is needed ────────────────────────────
+        if not budget_controller.can_activate_agent():
+            return primary_text
+
+        should_escalate, escalate_to = self.router.needs_escalation(
+            primary_text, task_frame
+        )
+
+        if not should_escalate:
+            print(f"  [chain] No escalation needed — done in 1 agent")
+            run_state.suppressed_agents = routing_decision.suppressed_agents
+            return primary_text
+
+        # ── Step 3: Run sub-agents with focused sub-tasks ────────────────────
+        sub_outputs: List[str] = [primary_text]
+        max_sub = min(len(escalate_to), budget_controller.get_remaining_agents())
+
+        for sub_id in escalate_to[:max_sub]:
+            if not budget_controller.can_activate_agent():
+                break
+
+            # Ensure the sub-agent exists (spawn if needed)
+            sub_spec = self.registry.get_agent(sub_id)
+            if sub_spec is None:
+                domain = sub_id.replace("specialist_", "")
+                spec, _ = self.agent_factory.spawn_for_task(
+                    task_text=task_frame.normalized_request,
+                    domain=domain,
+                    agent_id=sub_id,
+                    conversation_history=history,
+                )
+                self.registry.add_agent(spec)
+                self.registry_store.save_registry(self.registry)
+                sub_spec = spec
+
+            budget_controller.activate_agent()
+            run_state.active_agents.append(sub_id)
+
+            sub_agent = self._create_agent_instance(sub_spec, history)
+
+            # Focused sub-task — much smaller prompt than the full original
+            sub_task_text = self.router.build_sub_task(primary_text, task_frame, sub_id)
+
+            # Minimal TaskFrame for the sub-task
+            from app.schemas.task_frame import TaskFrame as TF
+            import uuid as _uuid
+            sub_frame = TF(
+                task_id=str(_uuid.uuid4()),
+                normalized_request=sub_task_text,
+                task_type=task_frame.task_type,
+                hard_constraints=[],
+                likely_tools=sub_spec.tools,
+                difficulty_estimate=0.3,   # sub-tasks are narrower
+                initial_uncertainty=0.3,
+                novelty_score=0.3,
+                freshness_requirement=task_frame.freshness_requirement,
+            )
+
+            sub_output = sub_agent.execute({
+                "task_frame": sub_frame,
+                "shared_context": f"Primary response:\n{primary_text}",
+                "constraints": [],
+                "available_tools": sub_spec.tools,
+                "iteration": 1,
+                "max_tokens": self.max_tokens // 2,   # sub-agents get half the budget
+                "workspace_root": workspace,
+            })
+            budget_controller.deactivate_agent()
+            self._collect_tool_calls({sub_id: sub_output})
+
+            sub_text = sub_output.get("output", "")
+            sub_outputs.append(sub_text)
+            print(f"  [chain] Sub-agent: {sub_id}")
+
+        run_state.suppressed_agents = routing_decision.suppressed_agents
+
+        # ── Step 4: Merge — primary answer + sub-agent additions ─────────────
+        if len(sub_outputs) == 1:
+            return sub_outputs[0]
+
+        # Lightweight merge: append non-redundant sub-agent content
+        merged = primary_text
+        for extra in sub_outputs[1:]:
+            if extra and extra.strip() and extra.strip() != primary_text.strip():
+                merged += f"\n\n---\n{extra.strip()}"
+        return merged
+
     def _execute_with_lead_pattern(
         self,
         task_frame,
