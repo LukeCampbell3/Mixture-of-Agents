@@ -23,42 +23,129 @@ A production-ready sparse agent orchestration system with **parallel execution**
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Single-File, No Installation)
 
-### Prerequisites
+### One-Command Launch
 
 ```bash
-# Install Ollama
+# macOS / Linux / Windows (with Ollama installed)
+python claude_integrated.py
+```
+
+That's it. The CLI will:
+1. Detect your hardware (RAM, CPU cores)
+2. Install Ollama if missing
+3. Start the Ollama server if not running
+4. Pull the optimal model for your machine
+5. Launch an interactive CLI with multi-agent AI assistance
+
+### What Gets Installed
+
+| Component | Size | Purpose |
+|-----------|------|---------|
+| Ollama | ~100MB | Local LLM server |
+| qwen2.5:0.5b | 397MB | Router model (fast classification) |
+| qwen2.5-coder:1.5b | 986MB | Worker model (code generation) |
+
+Total disk usage: ~1.5GB
+
+---
+
+## 🛠️ Prerequisites
+
+### Ollama (Auto-Installed)
+
+The CLI will automatically install Ollama if it's not found. If you prefer to install manually:
+
+**macOS:**
+```bash
+brew install ollama
+ollama serve &
+```
+
+**Linux:**
+```bash
 curl -fsSL https://ollama.com/install.sh | sh
+ollama serve &
+```
 
-# Pull Qwen2.5 model
-ollama pull qwen2.5:7b
+**Windows:**
+```powershell
+winget install Ollama.Ollama
+# Or download from https://ollama.com/download
+```
 
-# Install Python dependencies
+### Python 3.10+
+
+```bash
+# Check version
+python --version
+
+# Install dependencies (if not using the single-file CLI)
 pip install -r requirements.txt
 ```
 
-### Run Your First Task
+---
 
+## 📖 Usage
+
+### Interactive CLI
+
+```bash
+python claude_integrated.py
+```
+
+**Commands:**
+- `/help` — Show all commands
+- `/agents` — Show active agents and registry
+- `/concurrency 3` — Enable 3 parallel agents
+- `/concurrency off` — Single-agent mode
+- `/history` — Show conversation history
+- `/new` — Clear conversation history
+- `/context [path]` — Load workspace files into AI context
+- `/fs` — Show workspace root for file operations
+
+### Example Session
+
+```
+[project]> how would you implement a doubly linked list in python?
+Processing with Agentic Network...
+[spawn] Creating specialist: ml_engineering
+
+Assistant:
 ```python
-from app.orchestrator import Orchestrator
+class Node:
+    def __init__(self, data):
+        self.data = data
+        self.next = None
+        self.prev = None
 
-# Initialize with parallel execution and skill packs
-orchestrator = Orchestrator(
-    llm_provider="ollama",
-    llm_model="qwen2.5:7b",
-    budget_mode="balanced",
-    enable_parallel=True,
-    max_parallel_agents=3
-)
+class DoublyLinkedList:
+    def __init__(self):
+        self.head = None
+        self.tail = None
+```
 
-# Run a task
-result = orchestrator.run_task(
-    "Compare sorting algorithms and implement the most efficient one for large datasets"
-)
+[1/2] WRITE_FILE: src/node.py
+--- a/src/node.py
++++ b/src/node.py
+@@ -0,0 +1,20 @@
++class Node:
++    def __init__(self, data):
++        self.data = data
++        self.next = None
++        self.prev = None
+...
 
-print(f"Agents used: {result.active_agents}")
-print(f"Answer: {result.final_answer}")
+  Apply? [y]es / [n]o / [a]ll / [q]uit: y
+  ✓ Created: src/node.py
+
+[project]> does this use tensorflow or pytorch?
+Processing with Agentic Network...
+
+Assistant:
+The previous implementation uses pure Python with no external dependencies.
+To add PyTorch support, you could wrap the Node class with torch.nn.Module.
 ```
 
 ---
@@ -314,6 +401,9 @@ orchestrator = Orchestrator(
 6. **End-to-End Lifecycle Validation** ✅ — 5/5 tests passing (spawn, promote, prune, persist, multi-specialist)
 7. **Dynamic Agent Factory** ✅ — Spawned agents use `DynamicAgent` with domain-specific prompts
 8. **Embedding Fallback** ✅ — System runs without sentence-transformers installed
+9. **Single-File CLI** ✅ — `claude_integrated.py` with auto-install, no dependencies
+10. **Conversation History** ✅ — Context-aware follow-ups with `/history` and `/new`
+11. **AI-Driven File Operations** ✅ — Diff preview and approval before writing files
 
 ### Current Priority: Real-LLM Validation
 
