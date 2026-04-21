@@ -315,6 +315,118 @@ class ShellExecutor:
 # Singleton shell executor — persists cwd and env across commands
 _shell = ShellExecutor()
 
+
+# ---------------------------------------------------------------------------
+# Language preference detection + user prompt
+# ---------------------------------------------------------------------------
+
+# Signals that a task is a large codebase build (not a one-off snippet)
+_CODEBASE_SIGNALS = _re.compile(
+    r"\b(build|create|implement|develop|write|generate|scaffold|set up|setup)\b"
+    r".{0,60}"
+    r"\b(app|application|api|server|service|cli|tool|library|framework|"
+    r"project|codebase|system|backend|frontend|full.?stack|microservice)\b",
+    _re.IGNORECASE,
+)
+
+# Languages the system can target
+_SUPPORTED_LANGUAGES = {
+    "python":     ["python", "py", "django", "flask", "fastapi"],
+    "typescript": ["typescript", "ts", "node", "nodejs", "next", "react", "vue"],
+    "javascript": ["javascript", "js"],
+    "rust":       ["rust", "rs", "cargo"],
+    "go":         ["golang", "go"],
+    "java":       ["java", "spring", "maven", "gradle"],
+    "kotlin":     ["kotlin", "kt"],
+    "swift":      ["swift", "ios", "xcode"],
+    "csharp":     ["c#", "csharp", "dotnet", ".net", "asp.net"],
+    "cpp":        ["c++", "cpp"],
+    "ruby":       ["ruby", "rails"],
+    "php":        ["php", "laravel"],
+}
+
+# Reverse map: keyword → canonical language name
+_LANG_KEYWORDS: dict = {}
+for _lang, _kws in _SUPPORTED_LANGUAGES.items():
+    for _kw in _kws:
+        _LANG_KEYWORDS[_kw] = _lang
+
+
+def _detect_language_from_text(text: str) -> str:
+    """Return canonical language name if explicitly mentioned, else ''."""
+    t = text.lower()
+    for kw, lang in _LANG_KEYWORDS.items():
+        # Word-boundary match
+        if _re.search(r"\b" + _re.escape(kw) + r"\b", t):
+            return lang
+    return ""
+
+
+def _is_large_codebase_task(text: str) -> bool:
+    """Return True if the task looks like building a multi-file codebase."""
+    return bool(_CODEBASE_SIGNALS.search(text))
+
+
+def _detect_or_prompt_language(user_input: str, agentic_client) -> str:
+    """
+    Detect language from user input or prompt the user to choose.
+
+    Returns the chosen language name, or '' if not applicable.
+
+    Logic:
+    - If language is already explicit in the request → use it, no prompt
+    - If task is a large codebase build AND no language specified → ask once
+    - If task is a simple snippet/question → no prompt
+    - If orchestrator already has a language preference set → reuse it
+    """
+    # Reuse existing preference if set
+    if agentic_client.orchestrator:
+        existing = getattr(agentic_client.orchestrator, "_language_preference", "")
+        if existing:
+            return existing
+
+    # Detect from text
+    detected = _detect_language_from_text(user_input)
+    if detected:
+        return detected
+
+    # Only prompt for large codebase tasks
+    if not _is_large_codebase_task(user_input):
+        return ""
+
+    # Ask the user
+    print(Color.yellow(
+        "\n  This looks like a multi-file project. What language should I use?"
+    ))
+    print(Color.dim(
+        "  Options: python, typescript, javascript, rust, go, java, kotlin, "
+        "swift, csharp, cpp, ruby, php"
+    ))
+    print(Color.dim("  Press Enter to let the AI decide.\n"))
+
+    try:
+        choice = input(Color.yellow("  Language> ")).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+
+    if not choice:
+        return ""
+
+    # Normalise
+    lang = _LANG_KEYWORDS.get(choice, choice)
+    if lang in _SUPPORTED_LANGUAGES:
+        print(Color.green(f"  Using: {lang}"))
+        return lang
+
+    # Fuzzy: partial match
+    for canonical in _SUPPORTED_LANGUAGES:
+        if choice in canonical or canonical in choice:
+            print(Color.green(f"  Using: {canonical}"))
+            return canonical
+
+    print(Color.dim(f"  Unrecognised language '{choice}' — AI will decide."))
+    return ""
+
 # ANSI color codes for colored terminal output
 class Color:
     BLUE = "\033[34m"
@@ -1682,6 +1794,14 @@ def main():
                         workspace_context = inline_ctx.context_block + "\n\n" + workspace_context
                     else:
                         workspace_context = inline_ctx.context_block
+
+        # ── Language preference prompt for large codebase tasks ───────────────
+        # Only ask when the task clearly involves building a multi-file codebase
+        # and no language is already specified.
+        if not cmd.startswith("/") and agentic_client.ai_enabled:
+            lang_pref = _detect_or_prompt_language(cmd, agentic_client)
+            if lang_pref and agentic_client.orchestrator:
+                agentic_client.orchestrator._language_preference = lang_pref
 
         # If not a built-in command, send to agentic network
         print(Color.blue("Processing with Agentic Network..."))

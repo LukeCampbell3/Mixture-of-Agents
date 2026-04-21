@@ -417,6 +417,17 @@ class Orchestrator:
         history = getattr(self, "_conversation_history", "")
         workspace = getattr(self, "workspace_root", ".")
 
+        # ── Step 0: Pre-fetch knowledge for grounded responses ───────────────
+        from app.agents.knowledge_enricher import KnowledgeEnricher
+        enricher = KnowledgeEnricher()
+        enrichment = enricher.enrich(task_frame.normalized_request, verbose=True)
+        knowledge_block = enrichment.as_context_block()
+        if enrichment.has_content:
+            print(f"  [knowledge] {len([s for s in enrichment.sources if s.ok])} source(s) ready")
+
+        # Language preference (set by CLI before calling run_task)
+        lang_pref = getattr(self, "_language_preference", "")
+
         # ── Step 1: Run primary agent ────────────────────────────────────────
         primary_id = routing_decision.selected_agents[0]
         budget_controller.activate_agent()
@@ -439,6 +450,8 @@ class Orchestrator:
             "iteration": 1,
             "max_tokens": self.max_tokens,
             "workspace_root": workspace,
+            "knowledge_block": knowledge_block,
+            "language_preference": lang_pref,
         })
         budget_controller.deactivate_agent()
         self._collect_tool_calls({primary_id: primary_output})
@@ -547,6 +560,8 @@ class Orchestrator:
                 "iteration": 1,
                 "max_tokens": self.max_tokens // 2,   # sub-agents get half the budget
                 "workspace_root": workspace,
+                "knowledge_block": knowledge_block,
+                "language_preference": lang_pref,
             })
             budget_controller.deactivate_agent()
             self._collect_tool_calls({sub_id: sub_output})

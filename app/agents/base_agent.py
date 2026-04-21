@@ -62,6 +62,10 @@ class BaseAgent(ABC):
         arbitration    = task_context.get("arbitration_results", [])
         skill_packs    = task_context.get("skill_packs", [])
         workspace_root = task_context.get("workspace_root", ".")
+        # Enriched knowledge block (fetched docs, package metadata, etc.)
+        knowledge_block = task_context.get("knowledge_block", "")
+        # Language preference (e.g. "python", "typescript")
+        lang_pref = task_context.get("language_preference", "")
 
         modified_context = self._apply_skill_packs(task_context, skill_packs)
 
@@ -71,7 +75,9 @@ class BaseAgent(ABC):
             )
         else:
             prompt = self._build_prompt(
-                task_frame, shared_context, other_outputs, iteration, workspace_root
+                task_frame, shared_context, other_outputs, iteration,
+                workspace_root, knowledge_block=knowledge_block,
+                language_preference=lang_pref,
             )
 
         if skill_packs:
@@ -95,8 +101,6 @@ class BaseAgent(ABC):
             result = self._parse_response(response)
 
         # ── Model-agnostic fallback: extract & write code blocks ─────────────
-        # Runs whenever the agent has repo_tool, regardless of whether the
-        # model emitted proper <tool_call> blocks.
         if has_file_tools and task_frame is not None:
             extractor = CodeExtractor(workspace_root=workspace_root)
             extra_results = extractor.extract_and_write(
@@ -105,7 +109,6 @@ class BaseAgent(ABC):
                 existing_tool_calls=result.get("tool_calls", []),
             )
             if extra_results:
-                # Merge into result so orchestrator can report them
                 result.setdefault("tool_calls", [])
                 result.setdefault("tool_results", [])
                 for r in extra_results:
@@ -182,17 +185,34 @@ class BaseAgent(ABC):
         other_outputs: Dict[str, Any] = None,
         iteration: int = 1,
         workspace_root: str = ".",
+        knowledge_block: str = "",
+        language_preference: str = "",
     ) -> str:
         system_prompt = self.get_system_prompt()
+
+        # Language preference override
+        lang_directive = ""
+        if language_preference:
+            lang_directive = (
+                f"\nLANGUAGE: Write all code in {language_preference}. "
+                f"Use {language_preference} idioms, conventions, and standard library.\n"
+            )
 
         # Include file tool instructions when repo_tool is available
         file_tools_block = ""
         if "repo_tool" in self.tools:
             file_tools_block = _TOOL_CALL_INSTRUCTIONS
 
+        # Knowledge block (fetched docs) goes before the task
+        knowledge_section = ""
+        if knowledge_block:
+            knowledge_section = f"{knowledge_block}\n"
+
         prompt = (
             f"{system_prompt}\n"
+            f"{lang_directive}"
             f"{file_tools_block}\n"
+            f"{knowledge_section}"
             f"TASK:\n{task_frame.normalized_request}\n\n"
             f"TASK TYPE: {task_frame.task_type}\n\n"
             f"ITERATION: {iteration}\n\n"
