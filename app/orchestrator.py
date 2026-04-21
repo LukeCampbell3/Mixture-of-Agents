@@ -446,6 +446,41 @@ class Orchestrator:
         primary_text = primary_output.get("output", "")
         print(f"  [chain] Primary: {primary_id}")
 
+        # ── Step 1b: Run build-test-fix loop for coding tasks ────────────────
+        task_type_str = (
+            task_frame.task_type
+            if isinstance(task_frame.task_type, str)
+            else task_frame.task_type.value
+        )
+        is_coding = "coding" in task_type_str or "hybrid" in task_type_str
+        written_ops = primary_output.get("tool_calls", [])
+
+        if is_coding and written_ops:
+            from app.tools.codebase_builder import CodebaseBuilder, BuildConfig
+            build_cfg = BuildConfig(
+                workspace_root=workspace,
+                max_iterations=5 if self.budget_mode == "codebase" else 3,
+                tokens_per_iteration=self.max_tokens,
+                run_entry_points=True,
+                run_tests=True,
+                auto_generate_tests=(self.budget_mode == "codebase"),
+                verbose=True,
+            )
+            builder = CodebaseBuilder(
+                config=build_cfg,
+                agent_fn=lambda prompt, max_tok: self.llm_client.generate(
+                    prompt, max_tokens=max_tok, temperature=0.3
+                ),
+            )
+            session = builder.build(
+                task_text=task_frame.normalized_request,
+                initial_response=primary_output.get("raw_response", primary_text),
+                existing_tool_calls=written_ops,
+            )
+            # Append build summary to the answer
+            primary_text = primary_text + "\n\n" + session.summary()
+            run_state.final_files = session.final_files if hasattr(run_state, "final_files") else []
+
         # ── Step 2: Check if escalation is needed ────────────────────────────
         if not budget_controller.can_activate_agent():
             return primary_text

@@ -370,3 +370,153 @@ def _unified_diff(old: str, new: str, path: str) -> str:
     if len(diff) > 80:
         diff = diff[:80] + [f"... ({len(diff)-80} more lines)"]
     return "\n".join(diff)
+
+
+# ---------------------------------------------------------------------------
+# Code extractor — model-agnostic fallback file writer
+# ---------------------------------------------------------------------------
+
+# Maps markdown language tags to file extensions
+_LANG_EXT: Dict[str, str] = {
+    "python":     ".py",
+    "py":         ".py",
+    "javascript": ".js",
+    "js":         ".js",
+    "typescript": ".ts",
+    "ts":         ".ts",
+    "bash":       ".sh",
+    "sh":         ".sh",
+    "shell":      ".sh",
+    "sql":        ".sql",
+    "html":       ".html",
+    "css":        ".css",
+    "json":       ".json",
+    "yaml":       ".yaml",
+    "yml":        ".yaml",
+    "toml":       ".toml",
+    "rust":       ".rs",
+    "go":         ".go",
+    "java":       ".java",
+    "cpp":        ".cpp",
+    "c":          ".c",
+    "csharp":     ".cs",
+    "cs":         ".cs",
+    "ruby":       ".rb",
+    "rb":         ".rb",
+    "kotlin":     ".kt",
+    "swift":      ".swift",
+    "r":          ".r",
+    "dockerfile": "Dockerfile",
+    "makefile":   "Makefile",
+}
+
+# Regex: ```lang\n...code...\n```
+_CODE_BLOCK_RE = re.compile(
+    r'```(\w+)?\s*\n(.*?)```',
+    re.DOTALL
+)
+
+# Patterns that suggest a filename in the surrounding prose
+_FILENAME_HINT_RE = re.compile(
+    r'(?:file(?:\s+named?)?|create|save|write(?:\s+to)?|named?)\s+'
+    r'[`"\']?'
+    r'([\w/\-\.]+\.\w+)'   # captures something like graph_search.py
+    r'[`"\']?',
+    re.IGNORECASE
+)
+
+
+def _infer_filename(task_text: str, lang: str, index: int, response_text: str) -> str:
+    """Infer a filename for a code block.
+
+    Priority:
+    1. Explicit filename mentioned near the code block in the response
+    2. Filename derived from the task description
+    3. Generic fallback based on language + index
+    """
+    ext = _LANG_EXT.get(lang.lower() if lang else "", ".txt")
+
+    # 1. Look for explicit filename hints in the response
+    for m in _FILENAME_HINT_RE.finditer(response_text):
+        candidate = m.group(1)
+        # Accept if extension matches or no extension yet
+        if candidate.endswith(ext) or "." not in candidate:
+            return candidate if "." in candidate else candidate + ext
+
+    # 2. Derive from task text — take first 4 meaningful words
+    stop = {"a", "an", "the", "in", "for", "to", "of", "how", "would", "you",
+            "create", "write", "implement", "build", "make", "give", "me", "i",
+            "want", "need", "please", "can", "could", "should", "do", "does"}
+    words = [
+        w.lower().strip("?.,!") for w in task_text.split()
+        if w.lower().strip("?.,!") not in stop and w.isalpha() and len(w) > 2
+    ][:4]
+
+    if words:
+        stem = "_".join(words)
+        suffix = f"_{index}" if index > 0 else ""
+        return f"{stem}{suffix}{ext}"
+
+    # 3. Generic fallback
+    suffix = f"_{index}" if index > 0 else ""
+    return f"solution{suffix}{ext}"
+
+
+class CodeExtractor:
+    """Extract code blocks from agent responses and write them to files.
+
+    This is the model-agnostic fallback: when the LLM doesn't emit
+    <tool_call> blocks (small models often don't), we parse the markdown
+    code blocks ourselves and write them directly.
+
+    Only activates when no tool_calls were already parsed from the response.
+    """
+
+    def __init__(self, workspace_root: str = "."):
+        self.executor = FilesystemExecutor(workspace_root=workspace_root)
+
+    def extract_and_write(
+        self,
+        response: str,
+        task_text: str,
+        existing_tool_calls: List[FileOperation],
+    ) -> List[OperationResult]:
+        """Parse code blocks from response and write them to files.
+
+        Skips extraction if tool_calls already cover the same content
+        (avoids double-writing when the model did emit proper tool calls).
+
+        Returns list of OperationResult for each file written.
+        """
+        # If the model already emitted tool calls that write files, skip
+        already_written = {
+            op.path for op in existing_tool_calls
+            if op.tool == "write_file"
+        }
+
+        results: List[OperationResult] = []
+        blocks = _CODE_BLOCK_RE.findall(response)
+
+        # Filter out trivial/example blocks (< 3 lines of real code)
+        meaningful = [
+            (lang, code) for lang, code in blocks
+            if len([l for l in code.splitlines() if l.strip() and not l.strip().startswith("#")]) >= 3
+        ]
+
+        for i, (lang, code) in enumerate(meaningful):
+            filename = _infer_filename(task_text, lang or "txt", i, response)
+
+            # Don't overwrite a file the model already wrote via tool_call
+            if filename in already_written:
+                continue
+
+            op = FileOperation(
+                tool="write_file",
+                path=filename,
+                content=code.rstrip() + "\n",
+                description=f"Auto-extracted from agent response (block {i+1})",
+            )
+            result = self.executor.execute(op)
+            results.append(result)
+
+        return results

@@ -25,6 +25,10 @@ import traceback
 import fnmatch
 import subprocess
 import threading
+import shlex
+import signal
+import select
+import re as _re
 from typing import Dict, List, Any, Optional
 
 # Import the agentic network
@@ -32,6 +36,284 @@ from app.orchestrator import Orchestrator
 from app.schemas.run_state import RunState
 from app.models.llm_client import create_llm_client
 from app.tools.filesystem import FilesystemExecutor, FileOperation
+
+
+# ---------------------------------------------------------------------------
+# Shell executor — runs real commands, tracks cwd, streams output
+# ---------------------------------------------------------------------------
+
+# Commands that must be handled natively (they change process state)
+_BUILTIN_CMDS = {"cd", "export", "unset", "source", "."}
+
+# Known shell command prefixes — used to decide "is this a shell command?"
+_SHELL_CMD_PREFIXES = {
+    # navigation
+    "ls", "ll", "la", "l", "dir", "pwd", "cd", "pushd", "popd", "dirs",
+    # files
+    "cat", "less", "more", "head", "tail", "touch", "cp", "mv", "rm",
+    "mkdir", "rmdir", "ln", "chmod", "chown", "chgrp", "stat", "file",
+    "find", "locate", "which", "whereis", "type",
+    # text processing
+    "grep", "egrep", "fgrep", "rg", "ag", "sed", "awk", "cut", "sort",
+    "uniq", "wc", "tr", "tee", "xargs", "diff", "patch", "strings",
+    "column", "paste", "join", "comm", "fold", "fmt", "pr",
+    # archives
+    "tar", "gzip", "gunzip", "zip", "unzip", "bzip2", "xz", "7z",
+    # processes
+    "ps", "top", "htop", "kill", "killall", "pkill", "pgrep", "jobs",
+    "bg", "fg", "nohup", "nice", "renice", "wait", "sleep",
+    # system info
+    "uname", "hostname", "whoami", "id", "groups", "uptime", "date",
+    "cal", "df", "du", "free", "lscpu", "lsmem", "lsblk", "lsusb",
+    "lspci", "dmesg", "journalctl", "systemctl", "service",
+    # network
+    "ping", "curl", "wget", "ssh", "scp", "rsync", "netstat", "ss",
+    "ip", "ifconfig", "nslookup", "dig", "host", "traceroute", "nc",
+    "telnet", "ftp", "sftp",
+    # package managers
+    "apt", "apt-get", "dpkg", "yum", "dnf", "rpm", "pacman", "brew",
+    "pip", "pip3", "npm", "yarn", "cargo", "go", "gem", "composer",
+    # dev tools
+    "git", "make", "cmake", "gcc", "g++", "clang", "python", "python3",
+    "node", "deno", "ruby", "java", "javac", "mvn", "gradle",
+    "docker", "docker-compose", "kubectl", "helm", "terraform",
+    "ansible", "vagrant",
+    # editors (launch but don't block)
+    "nano", "vim", "vi", "emacs", "code", "subl",
+    # shell utilities
+    "echo", "printf", "read", "test", "[", "true", "false",
+    "env", "printenv", "set", "alias", "history", "clear", "reset",
+    "man", "info", "help",
+    # misc
+    "tree", "watch", "timeout", "time", "strace", "ltrace",
+    "ldd", "nm", "objdump", "readelf", "hexdump", "xxd",
+    "base64", "md5sum", "sha256sum", "sha1sum",
+    "jq", "yq", "xmllint", "csvkit",
+    "ollama", "ffmpeg", "convert", "identify",
+}
+
+# Patterns that strongly indicate natural language (→ send to AI)
+_NL_PATTERNS = _re.compile(
+    r"^(how|what|why|when|where|which|who|can you|could you|please|"
+    r"explain|describe|tell me|show me|help me|write|create|build|"
+    r"implement|generate|make|fix|debug|refactor|review|analyze|"
+    r"compare|summarize|translate|convert|i want|i need|i would|"
+    r"give me|provide|suggest|recommend)",
+    _re.IGNORECASE,
+)
+
+
+def _looks_like_shell_command(text: str) -> bool:
+    """Return True if text looks like a shell command rather than natural language."""
+    text = text.strip()
+    if not text:
+        return False
+
+    # Pipes, redirects, semicolons → definitely shell
+    if any(c in text for c in ("|", ">", "<", "&&", "||", ";")):
+        return True
+
+    # Starts with ./ or ~/ or / → path execution
+    if text.startswith(("./", "../", "~/", "/")):
+        return True
+
+    # Natural language patterns → not a shell command
+    if _NL_PATTERNS.match(text):
+        return False
+
+    # Check first word against known commands
+    first_word = text.split()[0].lower().rstrip("\\")
+    if first_word in _SHELL_CMD_PREFIXES:
+        # "help me ..." is natural language even though "help" is a command
+        if first_word in ("help", "man", "info") and len(text.split()) > 2:
+            return False
+        return True
+
+    # Short single-word input with no spaces → probably a command
+    if " " not in text and len(text) < 20 and text.isalnum():
+        return True
+
+    return False
+
+
+class ShellExecutor:
+    """
+    Execute shell commands with proper output streaming, cwd tracking,
+    and environment variable management.
+
+    Handles:
+    - cd (updates internal cwd, syncs os.getcwd())
+    - export VAR=val (updates os.environ)
+    - pipes, redirects, &&, ||, ; (via shell=True)
+    - streaming output (line-by-line as it arrives)
+    - Ctrl+C forwarding to child process
+    - Interactive commands (vim, nano, etc.) via os.system()
+    """
+
+    # Commands that need a real TTY (interactive)
+    _INTERACTIVE = {"vim", "vi", "nano", "emacs", "less", "more", "top",
+                    "htop", "man", "info", "python", "python3", "node",
+                    "irb", "pry", "ipython", "julia", "R", "ghci"}
+
+    def __init__(self):
+        self.env = os.environ.copy()
+
+    def run(self, command: str) -> int:
+        """
+        Execute a shell command. Returns exit code.
+        Output is streamed directly to stdout/stderr.
+        """
+        command = command.strip()
+        if not command:
+            return 0
+
+        # ── Built-in: cd ─────────────────────────────────────────────────────
+        if _re.match(r"^cd(\s|$)", command):
+            return self._builtin_cd(command)
+
+        # ── Built-in: export ─────────────────────────────────────────────────
+        if command.startswith("export "):
+            return self._builtin_export(command)
+
+        # ── Built-in: unset ──────────────────────────────────────────────────
+        if command.startswith("unset "):
+            varname = command[6:].strip()
+            self.env.pop(varname, None)
+            os.environ.pop(varname, None)
+            return 0
+
+        # ── Built-in: clear / reset ──────────────────────────────────────────
+        if command in ("clear", "reset"):
+            os.system("cls" if sys.platform == "win32" else "clear")
+            return 0
+
+        # ── Interactive commands — hand off to os.system() for full TTY ──────
+        first_word = command.split()[0].lower()
+        if first_word in self._INTERACTIVE:
+            return os.system(command)
+
+        # ── Everything else — subprocess with streaming output ────────────────
+        return self._run_subprocess(command)
+
+    def _builtin_cd(self, command: str) -> int:
+        parts = command.split(None, 1)
+        if len(parts) == 1 or parts[1] == "~":
+            target = os.path.expanduser("~")
+        elif parts[1] == "-":
+            target = self.env.get("OLDPWD", os.getcwd())
+        else:
+            target = os.path.expanduser(os.path.expandvars(parts[1]))
+            target = os.path.abspath(os.path.join(os.getcwd(), target))
+
+        try:
+            old = os.getcwd()
+            os.chdir(target)
+            self.env["OLDPWD"] = old
+            self.env["PWD"] = os.getcwd()
+            os.environ["PWD"] = os.getcwd()
+            return 0
+        except FileNotFoundError:
+            print(f"cd: {target}: No such file or directory", file=sys.stderr)
+            return 1
+        except NotADirectoryError:
+            print(f"cd: {target}: Not a directory", file=sys.stderr)
+            return 1
+        except PermissionError:
+            print(f"cd: {target}: Permission denied", file=sys.stderr)
+            return 1
+
+    def _builtin_export(self, command: str) -> int:
+        # export VAR=value  or  export VAR
+        rest = command[7:].strip()
+        if "=" in rest:
+            key, _, val = rest.partition("=")
+            key = key.strip()
+            val = val.strip().strip('"').strip("'")
+            val = os.path.expandvars(val)
+            self.env[key] = val
+            os.environ[key] = val
+        else:
+            # export VAR — mark for export (already in env if set)
+            pass
+        return 0
+
+    def _run_subprocess(self, command: str) -> int:
+        """Run command via subprocess, streaming output line by line."""
+        # Use shell=True so pipes, redirects, &&, || all work
+        use_shell = True
+
+        # On Windows use cmd.exe; on Unix use bash if available
+        if sys.platform == "win32":
+            executable = None  # uses cmd.exe
+        else:
+            executable = "/bin/bash" if os.path.exists("/bin/bash") else "/bin/sh"
+
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                command,
+                shell=use_shell,
+                executable=executable,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=os.getcwd(),
+                env=self.env,
+                text=True,
+                bufsize=1,
+            )
+
+            # Stream stdout and stderr concurrently
+            import threading as _threading
+
+            def _stream(pipe, color_fn=None):
+                try:
+                    for line in pipe:
+                        if color_fn:
+                            print(color_fn(line), end="")
+                        else:
+                            print(line, end="")
+                except Exception:
+                    pass
+
+            t_out = _threading.Thread(target=_stream, args=(proc.stdout,), daemon=True)
+            t_err = _threading.Thread(
+                target=_stream,
+                args=(proc.stderr, lambda l: f"\033[91m{l}\033[0m"),
+                daemon=True,
+            )
+            t_out.start()
+            t_err.start()
+
+            try:
+                proc.wait()
+            except KeyboardInterrupt:
+                # Forward Ctrl+C to child
+                try:
+                    proc.send_signal(signal.SIGINT)
+                    proc.wait(timeout=3)
+                except Exception:
+                    proc.kill()
+                print()  # newline after ^C
+                return 130
+
+            t_out.join(timeout=2)
+            t_err.join(timeout=2)
+            return proc.returncode
+
+        except FileNotFoundError:
+            first = command.split()[0]
+            print(f"\033[91m{first}: command not found\033[0m", file=sys.stderr)
+            return 127
+        except Exception as e:
+            print(f"\033[91mError: {e}\033[0m", file=sys.stderr)
+            return 1
+        finally:
+            if proc and proc.poll() is None:
+                proc.kill()
+
+
+# Singleton shell executor — persists cwd and env across commands
+_shell = ShellExecutor()
 
 # ANSI color codes for colored terminal output
 class Color:
@@ -560,62 +842,21 @@ def write_file(file_path, content):
         return {"success": False, "error": str(e)}
 
 def get_workspace_context(path="."):
-    """Get context from files in the workspace."""
+    """Get context from files in the workspace — delegates to ContextBuilderAgent."""
+    from app.agents.context_agent import ContextBuilderAgent
     try:
-        ignore_patterns = []
-        gitignore_path = os.path.join(os.getcwd(), '.gitignore')
-        if os.path.exists(gitignore_path):
-            with open(gitignore_path, 'r') as f:
-                ignore_patterns = [
-                    line.strip().replace('/', os.sep) for line in f 
-                    if line.strip() and not line.startswith('#')
-                ]
-
-        context = []
-        full_path = os.path.abspath(os.path.join(os.getcwd(), path))
-
-        if os.path.isfile(full_path):
-            try:
-                with open(full_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                context.append({
-                    "path": os.path.basename(full_path),
-                    "content": content
-                })
-                return {"success": True, "context": context}
-            except (UnicodeDecodeError, IOError):
-                return {"success": False, "error": "Cannot read file: binary or unreadable"}
-
-        for root, dirs, files in os.walk(full_path):
-            rel_root = os.path.relpath(root, full_path)
-            dirs[:] = [d for d in dirs if not any(
-                fnmatch.fnmatch(os.path.join(rel_root, d), p) or
-                fnmatch.fnmatch(d, p.rstrip(os.sep))
-                for p in ignore_patterns
-            )]
-            
-            for file in files:
-                rel_path = os.path.join(rel_root, file)
-                if any(fnmatch.fnmatch(rel_path, p) for p in ignore_patterns) or \
-                   any(fnmatch.fnmatch(file, p.rstrip(os.sep)) for p in ignore_patterns) or \
-                   any(pattern in file.lower() for pattern in ['.git', '.pyc', '.env', '__pycache__']):
-                    continue
-                
-                file_path = os.path.join(root, file)
-                rel_path = os.path.relpath(file_path, path)
-                
-                if any(any(fnmatch.fnmatch(part, p) for p in ignore_patterns) 
-                       for part in rel_path.split(os.sep)):
-                    continue
-                
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    context.append({"path": rel_path, "content": content})
-                except (UnicodeDecodeError, IOError):
-                    continue
-                    
-        return {"success": True, "context": context}
+        agent = ContextBuilderAgent(workspace_root=os.getcwd())
+        result = agent.build(
+            explicit_files=[path] if path != "." else [],
+            scan_dir=(path == "."),
+            include_tree=False,
+        )
+        context_list = [
+            {"path": e.path, "content": e.content}
+            for e in result.entries
+            if not e.is_binary and not e.error and e.content
+        ]
+        return {"success": True, "context": context_list}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -879,55 +1120,70 @@ def print_banner():
 def print_help():
     """Print help information about available commands."""
     commands = {
-        "Basic Commands": {
-            "/help": "Show this help message",
-            "/exit, /quit": "Exit the program",
-            "/pwd, /cwd": "Print working directory"
+        "Shell Commands (no prefix needed)": {
+            "ls, ll, la":          "List directory contents",
+            "cd <path>":           "Change directory",
+            "cat <file>":          "Display file contents",
+            "grep <pat> <file>":   "Search file contents",
+            "find <path> -name":   "Find files",
+            "mkdir -p <path>":     "Create directories",
+            "cp / mv / rm":        "Copy, move, delete files",
+            "git <cmd>":           "Git operations",
+            "python <file>":       "Run Python scripts",
+            "pip install <pkg>":   "Install packages",
+            "ps aux / kill <pid>": "Process management",
+            "curl / wget <url>":   "HTTP requests",
+            "tar / zip / unzip":   "Archive operations",
+            "chmod / chown":       "File permissions",
+            "df / du / free":      "Disk and memory usage",
+            "echo / printf":       "Print text",
+            "env / export VAR=v":  "Environment variables",
+            "| > < && ||":         "Pipes and redirects work too",
         },
-        "File Operations": {
-            "/ls [path]": "List directory contents",
-            "/tree [path]": "Show directory structure in tree format",
-            "/cat <file>": "Display file contents",
-            "/write <file>": "Create/overwrite a file",
-            "/append <file>": "Append to existing file"
+        "Slash Commands": {
+            "/help":               "Show this help message",
+            "/exit, /quit":        "Exit the program",
+            "/pwd, /cwd":          "Print working directory",
+            "/ls [path]":          "List directory (alias for ls -la)",
+            "/cd <path>":          "Change directory (alias for cd)",
+            "/cat <file>":         "Display file (alias for cat)",
+            "/tree [path]":        "Directory tree",
+            "/mkdir <path>":       "Create directory",
+            "/write <file>":       "Interactive file editor",
+            "/append <file>":      "Append to file interactively",
         },
-        "Directory Operations": {
-            "/cd <path>": "Change directory",
-            "/mkdir <path>": "Create directory"
-        },
-        "Configuration": {
-            "/config set <key> <value>": "Set configuration value",
-            "/config list": "List all configurations",
-            "/config show": "Show active configuration"
-        },
-        "Context": {
-            "/context [path], /#": "Get workspace context from path (default: current directory)"
+        "AI Commands": {
+            "Just ask":            "e.g. 'create a FastAPI app in src/main.py'",
+            "/context [path], /#": "Load workspace files into AI context",
+            "/fs":                 "Show workspace root",
         },
         "Agentic Network": {
-            "/agents": "Show agent status and full registry",
-            "/reload": "Reload config and clear conversation history",
-            "/test": "Test agentic network with a simple request",
-            "/concurrency [n|off]": "Set parallel agents (e.g. /concurrency 3) or disable",
-            "/history": "Show conversation history",
-            "/new, /clear": "Clear conversation history and start fresh",
+            "/agents":             "Show agent status and full registry",
+            "/reload":             "Reload config and clear conversation history",
+            "/test":               "Test agentic network with a simple request",
+            "/concurrency [n|off]":"Set parallel agents",
+            "/build [on|off]":     "Toggle codebase mode (large tokens + build loop)",
+            "/history":            "Show conversation history",
+            "/new, /clear":        "Clear conversation history",
         },
-        "File System (AI-driven)": {
-            "Just ask": "e.g. 'create a FastAPI app in src/main.py'",
-            "/context [path]": "Load workspace files into AI context",
-            "/fs": "Show workspace root and pending operations",
+        "Configuration": {
+            "/config set <k> <v>": "Set configuration value",
+            "/config list":        "List all configurations",
+            "/config show":        "Show active configuration",
         },
         "Ollama Management": {
-            "/ollama status": "Check Ollama status",
-            "/ollama start": "Start Ollama server",
-            "/ollama pull <model>": "Pull a model (e.g., /ollama pull qwen2.5:7b)"
-        }
+            "/ollama status":      "Check Ollama status",
+            "/ollama start":       "Start Ollama server",
+            "/ollama pull <model>":"Pull a model",
+        },
     }
 
     print(Color.blue("\nAvailable Commands:"))
     for section, cmds in commands.items():
         print(Color.yellow(f"\n{section}:"))
-        for cmd, desc in cmds.items():
-            print(f"  {Color.green(cmd):<30} {desc}")
+        for cmd_name, desc in cmds.items():
+            print(f"  {Color.green(cmd_name):<35} {desc}")
+    print(Color.dim("\n  Tip: shell commands run directly; natural language goes to the AI."))
     print()
 
 def main():
@@ -995,9 +1251,10 @@ def main():
         try:
             # Update prompt to show more context
             dir_name = os.path.basename(os.getcwd())
+            budget_tag = Color.yellow(" [build]") if profile["runtime"].get("budget_mode") == "codebase" else ""
             prompt = (Color.yellow(f"[{dir_name}] edit> ") if file_edit_mode.active and file_edit_mode.mode == "create" else
                      Color.yellow(f"[{dir_name}] append> ") if file_edit_mode.active and file_edit_mode.mode == "append" else
-                     Color.green(f"[{dir_name}]> "))
+                     Color.green(f"[{dir_name}]{budget_tag}> "))
             line = input(prompt)
 
         except (EOFError, KeyboardInterrupt):
@@ -1143,6 +1400,41 @@ def main():
             print(test_response)
             continue
 
+        if cmd.startswith("/build"):
+            # /build          — toggle codebase mode on/off
+            # /build on       — enable codebase mode (large tokens, build loop)
+            # /build off      — disable codebase mode
+            parts = cmd.split()
+            rt = profile["runtime"]
+            current = rt.get("budget_mode", "balanced")
+            if len(parts) == 1:
+                # Toggle
+                if current == "codebase":
+                    rt["budget_mode"] = "balanced"
+                    set_active_config("budget_mode", "balanced")
+                    set_active_config("max_tokens", 800)
+                    print(Color.yellow("Codebase mode OFF — back to balanced (800 tokens/agent)"))
+                else:
+                    rt["budget_mode"] = "codebase"
+                    set_active_config("budget_mode", "codebase")
+                    set_active_config("max_tokens", 4000)
+                    print(Color.green("Codebase mode ON — large token budget, build-test-fix loop enabled"))
+                    print(Color.dim("  Tokens/agent: 4000  |  Max iterations: 5  |  Tests: auto-generated"))
+            elif parts[1].lower() in ("on", "1", "true"):
+                rt["budget_mode"] = "codebase"
+                set_active_config("budget_mode", "codebase")
+                set_active_config("max_tokens", 4000)
+                print(Color.green("Codebase mode ON"))
+            elif parts[1].lower() in ("off", "0", "false"):
+                rt["budget_mode"] = "balanced"
+                set_active_config("budget_mode", "balanced")
+                set_active_config("max_tokens", 800)
+                print(Color.yellow("Codebase mode OFF"))
+            else:
+                print(Color.red("Usage: /build  or  /build on|off"))
+            agentic_client.initialize_orchestrator()
+            continue
+
         if cmd in ("/new", "/clear"):
             agentic_client.clear_history()
             print(Color.green("Conversation history cleared. Starting fresh."))
@@ -1204,35 +1496,34 @@ def main():
             continue
 
         # Directory operations
-        if cmd.startswith("/cd "):
-            path_arg = cmd[4:].strip()
-            result = change_directory(path_arg)
-            if result.get("success"):
-                print(Color.green(f"Changed directory to: {result['path']}"))
-            else:
-                print(Color.red(f"Error: {result.get('error')}"))
+        if cmd.startswith("/cd ") or cmd == "/cd":
+            path_arg = cmd[3:].strip() or "~"
+            _shell.run(f"cd {path_arg}")
+            print(Color.green(f"  {os.getcwd()}"))
             continue
 
         if cmd.startswith("/mkdir "):
             path_arg = cmd[7:].strip()
-            result = make_directory(path_arg)
-            if result.get("success"):
-                print(Color.green(f"Created directory: {result['path']}"))
-            else:
-                print(Color.red(f"Error: {result.get('error')}"))
+            _shell.run(f"mkdir -p {shlex.quote(path_arg)}")
             continue
 
         # File operations
         if cmd.startswith("/cat "):
             file_arg = cmd[5:].strip()
-            result = read_file(file_arg)
-            if result.get("success"):
-                print(Color.green(f"Contents of: {result['path']}"))
-                print("─" * 40)
-                print(result.get("content"))
-                print("─" * 40)
-            else:
-                print(Color.red(f"Error: {result.get('error')}"))
+            _shell.run(f"cat {shlex.quote(file_arg)}")
+            continue
+
+        if cmd.startswith("/ls") or cmd == "/ls":
+            arg = cmd[3:].strip()
+            _shell.run(f"ls -la {arg}" if arg else "ls -la")
+            continue
+
+        if cmd.startswith("/tree"):
+            arg = cmd[5:].strip()
+            # Use tree if available, fall back to find
+            rc = _shell.run(f"tree {arg}" if arg else "tree")
+            if rc == 127:  # command not found
+                _shell.run(f"find {arg or '.'} -not -path '*/.*' | sort | head -100")
             continue
 
         if cmd.startswith("/write "):
@@ -1259,34 +1550,69 @@ def main():
                 print(Color.red(f"Error: {result.get('error')}"))
             continue
 
-        # Context commands
+        # Context commands — /context, /#, @file inline, or bare filename
         if cmd.startswith("/context") or cmd.startswith("/#"):
-            parts = cmd.split(maxsplit=1)
-            path = parts[1] if len(parts) > 1 else "."
-            print(Color.green(f"Getting context from: {os.path.abspath(path)}"))
-            result = get_workspace_context(path)
-            if result.get("success"):
-                files = result["context"]
-                print(Color.green(f"\nFound {len(files)} file(s) in workspace:"))
-                
-                # Build context message for agentic network
-                context_message = f"Workspace context from {path}:\n\n"
-                for file in files:
-                    print(Color.blue(f"\n[{file['path']}]"))
-                    print("─" * 80)
-                    content_lines = file['content'].splitlines()
-                    for i, line in enumerate(content_lines, 1):
-                        print(f"{Color.dim(f'{i:4d} │')} {line}")
-                    print("─" * 80)
-                    
-                    # Add file content to context message
-                    context_message += f"File: {file['path']}\n```\n{file['content']}\n```\n\n"
-                
-                # Store context for future requests
-                workspace_context = context_message
-                print(Color.green("\nWorkspace context stored for AI assistance."))
-            else:
-                print(Color.red(f"Error: {result.get('error')}"))
+            from app.agents.context_agent import ContextBuilderAgent
+            parts_ctx = cmd.split(maxsplit=1)
+            path_arg = parts_ctx[1].strip() if len(parts_ctx) > 1 else "."
+
+            agent_ctx = ContextBuilderAgent(workspace_root=os.getcwd())
+
+            # Multiple space-separated files/paths supported
+            explicit = [p for p in path_arg.split() if p] if path_arg != "." else []
+
+            print(Color.yellow(f"  Building context from: {os.path.abspath(path_arg)}"))
+            ctx_result = agent_ctx.build(
+                explicit_files=explicit,
+                scan_dir=(path_arg == "."),
+                include_tree=True,
+                max_scan_files=30,
+            )
+
+            # Print summary
+            print(Color.green(f"\n  {ctx_result.summary()}"))
+
+            # Show fuzzy resolutions
+            if ctx_result.fuzzy_matches:
+                print(Color.dim("  Resolved:"))
+                for req, res in ctx_result.fuzzy_matches.items():
+                    print(Color.dim(f"    {req!r} → {res}"))
+
+            # Show ambiguous
+            if ctx_result.ambiguous:
+                print(Color.yellow("  Ambiguous (using first match):"))
+                for name, candidates in ctx_result.ambiguous.items():
+                    print(Color.yellow(f"    {name!r}: {', '.join(candidates[:4])}"))
+
+            # Show warnings
+            for w in ctx_result.warnings:
+                print(Color.yellow(f"  ⚠ {w}"))
+
+            # Print file tree
+            if ctx_result.file_tree:
+                print(Color.blue("\n  File tree:"))
+                for line in ctx_result.file_tree.splitlines()[:40]:
+                    print(Color.dim(f"    {line}"))
+                if ctx_result.file_tree.count("\n") > 40:
+                    print(Color.dim("    ... (truncated)"))
+
+            # Print loaded files
+            if ctx_result.entries:
+                print(Color.green(f"\n  Loaded {len(ctx_result.entries)} file(s):"))
+                for e in ctx_result.entries:
+                    if e.error:
+                        print(Color.red(f"    ✗ {e.path}: {e.error}"))
+                    elif e.is_image:
+                        print(Color.blue(f"    🖼  {e.path} ({e.size_bytes // 1024} KB image)"))
+                    elif e.is_binary:
+                        print(Color.dim(f"    ○ {e.path} (binary)"))
+                    else:
+                        trunc = " [truncated]" if e.truncated else ""
+                        lines_count = e.content.count("\n") + 1
+                        print(Color.green(f"    ✓ {e.path} ({lines_count} lines{trunc})"))
+
+            workspace_context = ctx_result.context_block
+            print(Color.green("\n  Context stored — will be injected into next AI request."))
             continue
 
         if cmd.startswith("/ls"):
@@ -1321,6 +1647,41 @@ def main():
             print(Color.dim("  Use /context to load files into AI context."))
             print(Color.dim("  Use /cd to change the workspace root."))
             continue
+
+        # ── Shell command passthrough ─────────────────────────────────────────
+        # Any input that looks like a shell command runs directly.
+        # Natural language goes to the AI.
+        if not cmd.startswith("/") and _looks_like_shell_command(cmd):
+            _shell.run(cmd)
+            continue
+
+        # ── @file inline resolution + auto-context injection ─────────────────
+        # If the user's message contains @filename or bare filenames, resolve
+        # them and inject their content into the request automatically.
+        if not cmd.startswith("/"):
+            from app.agents.context_agent import ContextBuilderAgent
+            ctx_agent = ContextBuilderAgent(workspace_root=os.getcwd())
+            mentioned = ctx_agent._extract_file_refs(cmd)
+
+            if mentioned:
+                print(Color.dim(f"  Resolving {len(mentioned)} file reference(s)..."))
+                inline_ctx = ctx_agent.build(
+                    user_input=cmd,
+                    explicit_files=mentioned,
+                    scan_dir=False,
+                    include_tree=False,
+                )
+                if inline_ctx.entries:
+                    # Show what was resolved
+                    for name, resolved in inline_ctx.fuzzy_matches.items():
+                        print(Color.dim(f"  {name!r} → {resolved}"))
+                    for w in inline_ctx.warnings:
+                        print(Color.yellow(f"  ⚠ {w}"))
+                    # Merge inline context with any existing workspace_context
+                    if workspace_context:
+                        workspace_context = inline_ctx.context_block + "\n\n" + workspace_context
+                    else:
+                        workspace_context = inline_ctx.context_block
 
         # If not a built-in command, send to agentic network
         print(Color.blue("Processing with Agentic Network..."))

@@ -1,34 +1,58 @@
-FROM python:3.11-slim
+# =============================================================================
+# Mixture-of-Agents CLI — Docker image
+# =============================================================================
+# Build:  docker build -t moa-cli .
+# Run:    docker run -it --rm -v $(pwd)/data:/app/data moa-cli
+# With Ollama on host:
+#   docker run -it --rm \
+#     --add-host=host.docker.internal:host-gateway \
+#     -e OLLAMA_BASE_URL=http://host.docker.internal:11434 \
+#     -v $(pwd)/data:/app/data \
+#     moa-cli
+# =============================================================================
+
+FROM python:3.11-slim AS base
+
+# System deps — minimal set, no build tools unless needed
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        git \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# ── Dependencies layer (cached unless requirements.txt changes) ───────────────
+FROM base AS deps
 
-# Copy requirements
 COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip wheel \
+ && pip install --no-cache-dir -r requirements.txt
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# ── Application layer ─────────────────────────────────────────────────────────
+FROM deps AS app
 
-# Copy application code
-COPY app/ ./app/
-COPY configs/ ./configs/
-COPY setup.py .
-COPY README.md .
+# Copy source
+COPY app/           ./app/
+COPY configs/       ./configs/
+COPY claude_integrated.py .
+COPY .env.example   .
 
-# Create data directory
+# Create persistent data directory
 RUN mkdir -p /app/data
 
-# Install package
-RUN pip install -e .
+# Non-root user for security
+RUN useradd -m -u 1000 moa && chown -R moa:moa /app
+USER moa
 
-# Expose port for API (if we add one later)
-EXPOSE 5000
+# Environment defaults (override at runtime)
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    OLLAMA_BASE_URL=http://host.docker.internal:11434 \
+    DATA_DIR=/app/data
 
-# Default command
-CMD ["python", "-m", "app.main", "--help"]
+# Health check — verifies Python env is intact
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "from app.orchestrator import Orchestrator; print('ok')" || exit 1
+
+CMD ["python", "claude_integrated.py"]

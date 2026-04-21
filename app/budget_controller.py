@@ -14,7 +14,7 @@ class BudgetMode:
         "max_retrieval_calls": 2,
         "max_validation_passes": 1,
         "max_wall_clock_seconds": 300.0,
-        "reserved_synthesis_tokens": 1000  # 20% reserved for synthesis
+        "reserved_synthesis_tokens": 1000
     }
     
     BALANCED = {
@@ -23,7 +23,7 @@ class BudgetMode:
         "max_retrieval_calls": 5,
         "max_validation_passes": 2,
         "max_wall_clock_seconds": 180.0,
-        "reserved_synthesis_tokens": 3000  # 20% reserved for synthesis
+        "reserved_synthesis_tokens": 3000
     }
     
     THOROUGH = {
@@ -32,7 +32,16 @@ class BudgetMode:
         "max_retrieval_calls": 10,
         "max_validation_passes": 3,
         "max_wall_clock_seconds": 600.0,
-        "reserved_synthesis_tokens": 6000  # 20% reserved for synthesis
+        "reserved_synthesis_tokens": 6000
+    }
+
+    CODEBASE = {
+        "max_active_agents": 5,
+        "max_prompt_tokens": 120000,   # large — full modules need room
+        "max_retrieval_calls": 10,
+        "max_validation_passes": 10,   # many repair iterations
+        "max_wall_clock_seconds": 1800.0,  # 30 minutes
+        "reserved_synthesis_tokens": 8000
     }
 
 
@@ -76,6 +85,8 @@ class BudgetController:
             return BudgetMode.LOW
         elif mode == "thorough":
             return BudgetMode.THOROUGH
+        elif mode == "codebase":
+            return BudgetMode.CODEBASE
         else:
             return BudgetMode.BALANCED
     

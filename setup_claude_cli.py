@@ -1,159 +1,233 @@
 #!/usr/bin/env python3
 """
-Setup script for Claude Code + Agentic Network integration.
+Mixture-of-Agents CLI — cross-platform setup entry point.
+
+Delegates to the platform-specific installer:
+  - Windows  → install.ps1  (PowerShell)
+  - Linux    → install.sh   (Bash)
+  - macOS    → install.sh   (Bash)
+
+Can also be used as a quick dependency check without running the full installer.
+
+Usage:
+    python setup_claude_cli.py            # run full installer
+    python setup_claude_cli.py --check    # check deps only, no install
+    python setup_claude_cli.py --no-ollama
 """
 
 import os
 import sys
 import subprocess
 import platform
+import argparse
+from pathlib import Path
 
-def check_python_version():
-    """Check Python version."""
-    if sys.version_info < (3, 8):
-        print("Error: Python 3.8 or higher is required.")
-        sys.exit(1)
-    print(f"✓ Python {sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+HERE = Path(__file__).parent.resolve()
 
-def install_requirements():
-    """Install required packages."""
-    print("\nInstalling requirements...")
-    
-    # Check if requirements.txt exists
-    if not os.path.exists("requirements.txt"):
-        print("Error: requirements.txt not found.")
-        sys.exit(1)
-    
+
+def _color(code: str, text: str) -> str:
+    if sys.platform == "win32" and not os.environ.get("TERM"):
+        return text
+    return f"\033[{code}m{text}\033[0m"
+
+ok   = lambda t: print(_color("32", f"  ✓ {t}"))
+warn = lambda t: print(_color("33", f"  ⚠ {t}"))
+err  = lambda t: print(_color("31", f"  ✗ {t}"), file=sys.stderr)
+info = lambda t: print(_color("36", f"  → {t}"))
+
+
+# ---------------------------------------------------------------------------
+# Dependency checker (no installs)
+# ---------------------------------------------------------------------------
+
+def check_python() -> bool:
+    v = sys.version_info
+    if v >= (3, 9):
+        ok(f"Python {v.major}.{v.minor}.{v.micro}")
+        return True
+    err(f"Python 3.9+ required, found {v.major}.{v.minor}")
+    return False
+
+
+def check_pip() -> bool:
     try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
-        print("✓ Requirements installed successfully")
-    except subprocess.CalledProcessError:
-        print("Error: Failed to install requirements")
-        sys.exit(1)
+        import pip  # noqa: F401
+        ok(f"pip {pip.__version__}")
+        return True
+    except ImportError:
+        warn("pip not found")
+        return False
 
-def create_symlink():
-    """Create a symlink/alias for easy access."""
-    print("\nCreating CLI symlink...")
-    
-    # Determine the appropriate command name
-    cli_name = "claude-agentic"
-    
-    # Create a simple wrapper script
-    wrapper_content = f'''#!/usr/bin/env python3
-import sys
-import os
 
-# Add current directory to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+def check_venv() -> bool:
+    venv = HERE / ".venv"
+    if venv.exists():
+        ok(f".venv found at {venv}")
+        return True
+    warn(".venv not found — run the installer")
+    return False
 
-from claude_integrated import main
 
-if __name__ == "__main__":
-    main()
-'''
-    
-    wrapper_path = f"{cli_name}.py"
-    with open(wrapper_path, "w") as f:
-        f.write(wrapper_content)
-    
-    # Make it executable
-    if platform.system() != "Windows":
-        os.chmod(wrapper_path, 0o755)
-    
-    print(f"✓ Created wrapper script: {wrapper_path}")
-    print(f"\nTo use the CLI:")
-    print(f"  python {wrapper_path}")
-    
-    if platform.system() != "Windows":
-        print(f"\nOr make it globally available:")
-        print(f"  sudo cp {wrapper_path} /usr/local/bin/{cli_name}")
-        print(f"  sudo chmod +x /usr/local/bin/{cli_name}")
-        print(f"  Then run: {cli_name}")
+def check_requirements() -> bool:
+    missing = []
+    packages = {
+        "openai":                 "openai",
+        "anthropic":              "anthropic",
+        "pydantic":               "pydantic",
+        "requests":               "requests",
+        "numpy":                  "numpy",
+        "sentence_transformers":  "sentence-transformers",
+        "sklearn":                "scikit-learn",
+        "yaml":                   "pyyaml",
+        "bs4":                    "beautifulsoup4",
+    }
+    for mod, pkg in packages.items():
+        try:
+            __import__(mod)
+        except ImportError:
+            missing.append(pkg)
 
-def check_ollama():
-    """Check if Ollama is installed and running."""
-    print("\nChecking Ollama...")
-    
+    if missing:
+        warn(f"Missing packages: {', '.join(missing)}")
+        return False
+    ok("All Python packages installed")
+    return True
+
+
+def check_ollama() -> bool:
+    # Check binary
+    result = subprocess.run(
+        ["ollama", "--version"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        warn("Ollama not found — install from https://ollama.com/")
+        return False
+    ok(f"Ollama: {result.stdout.strip()}")
+
+    # Check server
     try:
-        # Try to check Ollama version
-        result = subprocess.run(["ollama", "--version"], capture_output=True, text=True)
-        if result.returncode == 0:
-            print(f"✓ Ollama found: {result.stdout.strip()}")
-            
-            # Check if Ollama is running
-            try:
-                import requests
-                response = requests.get("http://localhost:11434/api/tags", timeout=5)
-                if response.status_code == 200:
-                    print("✓ Ollama server is running")
-                else:
-                    print("⚠ Ollama server may not be running")
-                    print("  Start with: ollama serve")
-            except:
-                print("⚠ Cannot connect to Ollama server")
-                print("  Start with: ollama serve")
-        else:
-            print("⚠ Ollama not found or not in PATH")
-            print("  Install from: https://ollama.com/")
-    except FileNotFoundError:
-        print("⚠ Ollama not found or not in PATH")
-        print("  Install from: https://ollama.com/")
-
-def pull_default_model():
-    """Pull the default Qwen2.5 model."""
-    print("\nChecking default model...")
-    
-    try:
-        # Check if model is available
         import requests
-        response = requests.get("http://localhost:11434/api/tags", timeout=10)
-        if response.status_code == 200:
-            models = response.json().get("models", [])
-            qwen_models = [m for m in models if "qwen2.5" in m.get("name", "").lower()]
-            
-            if qwen_models:
-                print(f"✓ Qwen2.5 model found: {qwen_models[0]['name']}")
-            else:
-                print("⚠ Qwen2.5 model not found")
-                print("  Pull with: ollama pull qwen2.5:7b")
+        r = requests.get("http://localhost:11434/api/tags", timeout=3)
+        if r.status_code == 200:
+            models = r.json().get("models", [])
+            ok(f"Ollama server running ({len(models)} model(s) pulled)")
+            for m in models[:5]:
+                info(f"  {m['name']}")
+            return True
+    except Exception:
+        pass
+    warn("Ollama server not running — start with: ollama serve")
+    return False
+
+
+def run_checks() -> bool:
+    print(_color("1;34", "\nDependency Check"))
+    print("─" * 40)
+    results = [
+        check_python(),
+        check_pip(),
+        check_venv(),
+        check_requirements(),
+        check_ollama(),
+    ]
+    print()
+    passed = sum(results)
+    total  = len(results)
+    if passed == total:
+        ok(f"All {total} checks passed — ready to run!")
+        print(f"\n  {_color('32', 'Start the CLI:')}")
+        if sys.platform == "win32":
+            print("    .\\run.ps1   or   run.bat")
         else:
-            print("⚠ Cannot check models - Ollama may not be running")
-    except:
-        print("⚠ Cannot check models - Ollama may not be running")
+            print("    ./run.sh")
+    else:
+        warn(f"{passed}/{total} checks passed — run the installer to fix issues")
+        if sys.platform == "win32":
+            print("    .\\install.ps1")
+        else:
+            print("    ./install.sh")
+    return passed == total
+
+
+# ---------------------------------------------------------------------------
+# Installer delegation
+# ---------------------------------------------------------------------------
+
+def run_installer(args: argparse.Namespace):
+    extra = []
+    if args.no_ollama:
+        extra.append("--no-ollama")
+    if args.dev:
+        extra.append("--dev")
+    if args.model:
+        extra += ["--model", args.model]
+
+    if sys.platform == "win32":
+        script = HERE / "install.ps1"
+        if not script.exists():
+            err(f"install.ps1 not found at {script}")
+            sys.exit(1)
+
+        ps_args = ["powershell", "-ExecutionPolicy", "Bypass", "-File", str(script)]
+        if args.no_ollama:
+            ps_args += ["-NoOllama"]
+        if args.dev:
+            ps_args += ["-Dev"]
+        if args.model:
+            ps_args += ["-Model", args.model]
+
+        info(f"Running: {' '.join(ps_args)}")
+        sys.exit(subprocess.call(ps_args))
+
+    else:
+        script = HERE / "install.sh"
+        if not script.exists():
+            err(f"install.sh not found at {script}")
+            sys.exit(1)
+
+        # Ensure executable
+        script.chmod(script.stat().st_mode | 0o755)
+
+        cmd = ["bash", str(script)] + extra
+        info(f"Running: {' '.join(cmd)}")
+        sys.exit(subprocess.call(cmd))
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
-    print("=" * 60)
-    print("Claude Code + Agentic Network v2 Setup")
-    print("=" * 60)
-    
-    # Check Python
-    check_python_version()
-    
-    # Check Ollama
-    check_ollama()
-    
-    # Install requirements
-    install_requirements()
-    
-    # Check default model
-    pull_default_model()
-    
-    # Create symlink
-    create_symlink()
-    
-    print("\n" + "=" * 60)
-    print("Setup complete!")
-    print("\nNext steps:")
-    print("1. Start Ollama server (if not running):")
-    print("   ollama serve")
-    print("2. Pull Qwen2.5 model (if not available):")
-    print("   ollama pull qwen2.5:7b")
-    print("3. Start the CLI:")
-    print("   python claude_integrated.py")
-    print("4. Configure (optional):")
-    print('   /config set llm_model "your-model"')
-    print('   /config set llm_base_url "your-url"')
-    print("=" * 60)
+    parser = argparse.ArgumentParser(
+        description="Mixture-of-Agents CLI setup",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python setup_claude_cli.py              Run full installer
+  python setup_claude_cli.py --check      Check deps only
+  python setup_claude_cli.py --no-ollama  Skip Ollama
+  python setup_claude_cli.py --model qwen2.5:1.5b
+        """,
+    )
+    parser.add_argument("--check",     action="store_true", help="Check dependencies only, no install")
+    parser.add_argument("--no-ollama", action="store_true", help="Skip Ollama installation")
+    parser.add_argument("--dev",       action="store_true", help="Install dev dependencies")
+    parser.add_argument("--model",     default="",          help="Ollama model to pull")
+    args = parser.parse_args()
+
+    print(_color("1;36", f"""
+╔══════════════════════════════════════════════════════════╗
+║       Mixture-of-Agents CLI — Setup                      ║
+║       Platform: {platform.system()} {platform.machine():<36}║
+╚══════════════════════════════════════════════════════════╝"""))
+
+    if args.check:
+        ok_all = run_checks()
+        sys.exit(0 if ok_all else 1)
+
+    run_installer(args)
+
 
 if __name__ == "__main__":
     main()

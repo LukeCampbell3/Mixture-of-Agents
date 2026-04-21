@@ -3,7 +3,7 @@
 from typing import Dict, Any, List, Optional
 from abc import ABC, abstractmethod
 from app.models.llm_client import LLMClient
-from app.tools.filesystem import parse_tool_calls
+from app.tools.filesystem import parse_tool_calls, CodeExtractor
 
 
 # Tool call instructions — injected when repo_tool is available.
@@ -48,6 +48,10 @@ class BaseAgent(ABC):
         the agent has repo_tool, tool calls are executed as they arrive
         rather than after the full response — cutting perceived latency
         to near-zero for file operations.
+
+        After execution, CodeExtractor runs as a model-agnostic fallback:
+        any markdown code blocks that weren't already written via tool_calls
+        are extracted and written to files automatically.
         """
         task_frame    = task_context.get("task_frame")
         shared_context = task_context.get("shared_context", "")
@@ -89,6 +93,26 @@ class BaseAgent(ABC):
                 prompt, max_tokens=max_tokens, temperature=temperature
             )
             result = self._parse_response(response)
+
+        # ── Model-agnostic fallback: extract & write code blocks ─────────────
+        # Runs whenever the agent has repo_tool, regardless of whether the
+        # model emitted proper <tool_call> blocks.
+        if has_file_tools and task_frame is not None:
+            extractor = CodeExtractor(workspace_root=workspace_root)
+            extra_results = extractor.extract_and_write(
+                response=result.get("raw_response", result.get("output", "")),
+                task_text=task_frame.normalized_request,
+                existing_tool_calls=result.get("tool_calls", []),
+            )
+            if extra_results:
+                # Merge into result so orchestrator can report them
+                result.setdefault("tool_calls", [])
+                result.setdefault("tool_results", [])
+                for r in extra_results:
+                    result["tool_calls"].append(r.op)
+                    result["tool_results"].append(r)
+                    status = "✓" if r.success else "✗"
+                    print(f"  {status} auto-write: {r.op.path}")
 
         if skill_packs:
             result["skill_packs_applied"] = [pack.pack_id for pack in skill_packs]

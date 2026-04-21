@@ -56,6 +56,9 @@ class RunState(BaseModel):
     # File operations emitted by agents — awaiting user approval before execution
     pending_tool_calls: List[Any] = Field(default_factory=list)
     
+    # Files written and verified by the build loop
+    final_files: List[str] = Field(default_factory=list)
+    
     # Lifecycle tracking (NEW)
     spawn_recommendations: List[Dict[str, Any]] = Field(default_factory=list)
     spawned_agents: List[str] = Field(default_factory=list)
