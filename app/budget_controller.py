@@ -39,14 +39,20 @@ class BudgetMode:
 class BudgetController:
     """Enforce hard operational limits on task execution."""
     
-    def __init__(self, mode: str = "balanced"):
+    def __init__(self, mode: str = "balanced", max_agents_override: int = None):
         """Initialize budget controller.
         
         Args:
             mode: Budget mode - "low", "balanced", or "thorough"
+            max_agents_override: If set, caps max_active_agents regardless of mode.
+                                 Use this to honour the device profile's agent limit.
         """
         self.mode = mode
         limits = self._get_limits(mode)
+        
+        # Device profile takes precedence over mode defaults
+        if max_agents_override is not None:
+            limits["max_active_agents"] = max_agents_override
         
         self.status = BudgetStatus(
             max_active_agents=limits["max_active_agents"],

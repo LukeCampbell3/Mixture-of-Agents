@@ -420,60 +420,61 @@ class Router:
     
     def _compute_capability_match(self, agent: AgentSpec, task_frame: TaskFrame) -> float:
         """Compute how well agent capabilities match task needs."""
-        # Domain-based matching - MORE AGGRESSIVE activation
-        domain_match = 0.5  # Default: moderate baseline
-        
+        domain_match = 0.5
+
         task_type = task_frame.task_type
-        if isinstance(task_type, str):
-            task_type_str = task_type
-        else:
-            task_type_str = task_type.value
-        
-        # Primary domain matches - very high scores
-        if agent.domain == "coding" and "coding" in task_type_str:
-            domain_match = 0.95
-        elif agent.domain == "research" and "research" in task_type_str:
-            domain_match = 0.95
-        elif agent.domain == "verification":
-            # Critic is ALWAYS useful for quality assurance
-            if "planning" in task_type_str:
-                domain_match = 0.9  # Reasoning tasks benefit from verification
-            elif task_frame.initial_uncertainty > 0.3 or task_frame.difficulty_estimate > 0.5:
-                domain_match = 0.85  # High value for uncertain/complex tasks
-            else:
-                domain_match = 0.6  # Still valuable for simple tasks
-        
-        # Specialist domain matches (spawned agents)
-        # Check if the task text matches the agent's target domain
+        task_type_str = task_type if isinstance(task_type, str) else task_type.value
         task_text_lower = task_frame.normalized_request.lower()
-        if agent.domain == "api_migration":
-            if any(kw in task_text_lower for kw in ["api", "migrate", "migration", "endpoint", "rest", "graphql"]):
+
+        # Base agents
+        if agent.agent_id == "code_primary":
+            if "coding" in task_type_str:
+                domain_match = 0.85
+            elif task_type_str in ("planning", "unknown"):
+                domain_match = 0.5
+            else:
+                domain_match = 0.3
+
+        elif agent.agent_id == "web_research":
+            if "research" in task_type_str:
                 domain_match = 0.95
-        elif agent.domain == "security_audit":
-            if any(kw in task_text_lower for kw in ["security", "audit", "vulnerability", "injection"]):
-                domain_match = 0.95
-        
-        # Cross-domain synergies - ENABLE rather than penalize
-        if agent.domain == "coding" and "research" in task_type_str:
-            domain_match = 0.4  # Coding perspective on research can help
-        if agent.domain == "coding" and task_type_str in ("planning", "unknown"):
-            domain_match = 0.4  # Implementation perspective on planning
-        if agent.domain == "research" and "coding" in task_type_str:
-            # Research can provide context and best practices
-            domain_match = 0.5  # Increased from 0.15
-        
-        # Hybrid tasks benefit from ALL agents
-        if "hybrid" in task_type_str or task_type_str == "unknown":
-            domain_match = max(domain_match, 0.7)  # Boost all agents for hybrid
-        
-        # Tool match
+            elif "coding" in task_type_str:
+                domain_match = 0.2
+            else:
+                domain_match = 0.4
+
+        elif agent.agent_id == "critic_verifier":
+            if any(kw in task_text_lower for kw in
+                   ["review", "check", "verify", "validate", "audit", "critique"]):
+                domain_match = 0.85
+            else:
+                domain_match = 0.15
+
+        # Dynamically spawned specialists
+        else:
+            agent_keywords = set(agent.tags or []) | {agent.domain}
+            agent_keywords -= {"spawned", "dynamic", "probationary"}
+            hits = sum(
+                1 for kw in agent_keywords
+                if kw.replace("_", " ") in task_text_lower or kw in task_text_lower
+            )
+            if hits > 0:
+                domain_match = min(0.95, 0.6 + hits * 0.1)
+            else:
+                domain_words = agent.domain.replace("_", " ").split()
+                if any(w in task_text_lower for w in domain_words if len(w) > 3):
+                    domain_match = 0.75
+                else:
+                    domain_match = 0.2
+
+        # Tool match bonus
         tool_match = 0.0
         if agent.tools and task_frame.likely_tools:
-            matching_tools = set(agent.tools) & set(task_frame.likely_tools)
-            tool_match = len(matching_tools) / len(task_frame.likely_tools) if task_frame.likely_tools else 0.0
-        
-        return 0.7 * domain_match + 0.3 * tool_match
-    
+            common = set(agent.tools) & set(task_frame.likely_tools)
+            tool_match = len(common) / len(set(agent.tools) | set(task_frame.likely_tools))
+
+        return min(1.0, 0.8 * domain_match + 0.2 * tool_match)
+
     def _generate_score_reason(
         self,
         agent: AgentSpec,

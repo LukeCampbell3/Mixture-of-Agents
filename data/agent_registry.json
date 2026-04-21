@@ -4,7 +4,7 @@
     "code_primary": {
       "agent_id": "code_primary",
       "name": "Code Primary",
-      "description": "Primary coding agent for implementation, debugging, and architecture",
+      "description": "General-purpose coding agent: implementation, debugging, architecture",
       "domain": "coding",
       "lifecycle_state": "hot",
       "tools": [
@@ -16,8 +16,8 @@
         "implementation",
         "debugging"
       ],
-      "created_at": "2026-04-20T23:15:11.659465",
-      "updated_at": "2026-04-20T23:15:11.659465",
+      "created_at": "2026-04-21T01:23:26.530154",
+      "updated_at": "2026-04-21T01:23:26.530154",
       "parent_lineage": null,
       "target_cluster": null,
       "expected_activation_rate": 0.0,
@@ -43,8 +43,8 @@
         "documentation",
         "validation"
       ],
-      "created_at": "2026-04-20T23:15:11.659465",
-      "updated_at": "2026-04-20T23:15:11.659465",
+      "created_at": "2026-04-21T01:23:26.530154",
+      "updated_at": "2026-04-21T01:23:26.530154",
       "parent_lineage": null,
       "target_cluster": null,
       "expected_activation_rate": 0.0,
@@ -70,127 +70,8 @@
         "testing",
         "quality"
       ],
-      "created_at": "2026-04-20T23:15:11.659465",
-      "updated_at": "2026-04-20T23:15:11.659465",
-      "parent_lineage": null,
-      "target_cluster": null,
-      "expected_activation_rate": 0.0,
-      "total_activations": 0,
-      "successful_activations": 0,
-      "average_quality_lift": 0.0,
-      "average_token_cost": 0.0,
-      "calibration_score": 0.5,
-      "overlap_with": {}
-    },
-    "devops": {
-      "agent_id": "devops",
-      "name": "DevOps",
-      "description": "CI/CD, containers, infrastructure-as-code, and deployment specialist",
-      "domain": "devops",
-      "lifecycle_state": "warm",
-      "tools": [
-        "repo_tool",
-        "shell_tool"
-      ],
-      "tags": [
-        "devops",
-        "docker",
-        "kubernetes",
-        "ci_cd",
-        "terraform",
-        "cloud"
-      ],
-      "created_at": "2026-04-20T23:15:11.659465",
-      "updated_at": "2026-04-20T23:15:11.659465",
-      "parent_lineage": null,
-      "target_cluster": null,
-      "expected_activation_rate": 0.0,
-      "total_activations": 0,
-      "successful_activations": 0,
-      "average_quality_lift": 0.0,
-      "average_token_cost": 0.0,
-      "calibration_score": 0.5,
-      "overlap_with": {}
-    },
-    "data_analysis": {
-      "agent_id": "data_analysis",
-      "name": "Data Analysis",
-      "description": "Data analysis, statistics, visualization, and ML workflow specialist",
-      "domain": "data",
-      "lifecycle_state": "warm",
-      "tools": [
-        "repo_tool",
-        "data_tool"
-      ],
-      "tags": [
-        "data",
-        "pandas",
-        "statistics",
-        "visualization",
-        "machine_learning"
-      ],
-      "created_at": "2026-04-20T23:15:11.659465",
-      "updated_at": "2026-04-20T23:15:11.659465",
-      "parent_lineage": null,
-      "target_cluster": null,
-      "expected_activation_rate": 0.0,
-      "total_activations": 0,
-      "successful_activations": 0,
-      "average_quality_lift": 0.0,
-      "average_token_cost": 0.0,
-      "calibration_score": 0.5,
-      "overlap_with": {}
-    },
-    "security": {
-      "agent_id": "security",
-      "name": "Security",
-      "description": "Security review, vulnerability analysis, and hardening specialist",
-      "domain": "security_audit",
-      "lifecycle_state": "warm",
-      "tools": [
-        "repo_tool",
-        "web_tool",
-        "citation_checker"
-      ],
-      "tags": [
-        "security",
-        "owasp",
-        "vulnerability",
-        "authentication",
-        "cryptography"
-      ],
-      "created_at": "2026-04-20T23:15:11.659465",
-      "updated_at": "2026-04-20T23:15:11.659465",
-      "parent_lineage": null,
-      "target_cluster": null,
-      "expected_activation_rate": 0.0,
-      "total_activations": 0,
-      "successful_activations": 0,
-      "average_quality_lift": 0.0,
-      "average_token_cost": 0.0,
-      "calibration_score": 0.5,
-      "overlap_with": {}
-    },
-    "sql": {
-      "agent_id": "sql",
-      "name": "SQL",
-      "description": "SQL queries, schema design, and database optimization specialist",
-      "domain": "database",
-      "lifecycle_state": "warm",
-      "tools": [
-        "repo_tool",
-        "data_tool"
-      ],
-      "tags": [
-        "sql",
-        "database",
-        "postgresql",
-        "mysql",
-        "schema",
-        "query_optimization"
-      ],
-      "created_at": "2026-04-20T23:15:11.659465",
-      "updated_at": "2026-04-20T23:15:11.659465",
+      "created_at": "2026-04-21T01:23:26.530154",
+      "updated_at": "2026-04-21T01:23:26.530154",
       "parent_lineage": null,
       "target_cluster": null,
       "expected_activation_rate": 0.0,
@@ -202,5 +83,5 @@
       "overlap_with": {}
     }
   },
-  "last_updated": "2026-04-20T23:15:11.659465"
+  "last_updated": "2026-04-21T01:23:26.530154"
 }

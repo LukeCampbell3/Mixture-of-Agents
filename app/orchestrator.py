@@ -12,10 +12,6 @@ from app.models.uncertainty import UncertaintyEstimator
 from app.agents.code_primary import CodePrimaryAgent
 from app.agents.web_research import WebResearchAgent
 from app.agents.critic_verifier import CriticVerifierAgent
-from app.agents.devops_agent import DevOpsAgent
-from app.agents.data_analysis_agent import DataAnalysisAgent
-from app.agents.security_agent import SecurityAgent
-from app.agents.sql_agent import SQLAgent
 from app.storage.registry_store import RegistryStore
 from app.storage.artifact_store import ArtifactStore
 from app.calibration import ThreeLevelCalibrator
@@ -110,6 +106,10 @@ class Orchestrator:
         # Skill pack registry
         self.skill_pack_registry = get_skill_pack_registry()
         
+        # Budget mode + device-profile agent cap
+        self.budget_mode = budget_mode
+        self.max_parallel_agents = max_parallel_agents  # used as hard cap in run_task
+        
         # Lifecycle manager
         self.lifecycle_manager = LifecycleManager(
             self.registry,
@@ -124,9 +124,6 @@ class Orchestrator:
             self.registry,
             self.embedding_generator
         )
-        
-        # Budget mode
-        self.budget_mode = budget_mode
     
     def _initialize_calibrator(self, data_dir: str) -> Optional[ThreeLevelCalibrator]:
         """Initialize or load calibrator."""
@@ -145,22 +142,26 @@ class Orchestrator:
         return calibrator
     
     def run_task(self, user_request: str) -> RunState:
-        """Execute a task through the agent network with lead-agent pattern.
-        
-        Args:
-            user_request: User's task description
-        
-        Returns:
-            RunState with complete execution record
+        """Execute a task through the agent network.
+
+        Before routing, checks whether any existing agent is a good fit.
+        If not, spawns a specialist on-demand using the LLM, registers it,
+        and routes to it immediately — no waiting for history to accumulate.
         """
-        # Initialize budget controller
-        budget_controller = BudgetController(mode=self.budget_mode)
+        # Initialize budget controller — honour device profile's agent cap
+        budget_controller = BudgetController(
+            mode=self.budget_mode,
+            max_agents_override=self.max_parallel_agents
+        )
         budget_controller.start_execution()
-        
+
         # Frame the task
         task_frame = self.router.frame_task(user_request)
         task_family = self.router._get_task_family(task_frame.task_type)
-        
+
+        # ── On-demand spawn: detect gap before routing ────────────────────
+        self._maybe_spawn_specialist(task_frame)
+
         # Initialize run state
         run_state = RunState(
             task_id=task_frame.task_id,
@@ -698,6 +699,10 @@ class Orchestrator:
             "devops":         ["code_review", "security_focused", "implementation_with_research"],
             "data":           ["quantitative_analysis", "algorithm_optimization"],
             "database":       ["algorithm_optimization", "code_review"],
+            "testing":        ["code_review", "logical_analysis"],
+            "api":            ["code_review", "implementation_with_research", "security_focused"],
+            "documentation":  ["code_review"],
+            "refactoring":    ["code_review", "algorithm_optimization", "security_focused"],
         }
         
         # Universal packs that apply to all agents
@@ -712,32 +717,138 @@ class Orchestrator:
         
         return selected
     
+    def _maybe_spawn_specialist(self, task_frame) -> None:
+        """
+        Spawn a specialist agent on-demand when the task has clear specialist
+        signals but no matching specialist exists yet.
+
+        Logic:
+        1. Detect the specialist domain from the task text.
+        2. If no specialist for that domain exists, spawn one immediately.
+        3. If a specialist already exists, do nothing (it will be routed to).
+        4. If no specialist domain is detected, fall back to base agents.
+        """
+        # Detect the specialist domain from the task text
+        domain = self._detect_specialist_domain(task_frame.normalized_request)
+        if domain is None:
+            return  # No specialist signal — base agents are fine
+
+        # Check if we already have a specialist for this domain
+        agent_id = f"specialist_{domain}"
+        if self.registry.get_agent(agent_id) is not None:
+            return  # Already exists — router will select it
+
+        # Spawn a new specialist
+        print(f"\n  [spawn] Creating specialist: {domain}")
+        spec, _instance = self.agent_factory.spawn_for_task(
+            task_text=task_frame.normalized_request,
+            domain=domain,
+            agent_id=agent_id,
+        )
+
+        # Register immediately so the router sees it on this request
+        self.registry.add_agent(spec)
+        self.registry_store.save_registry(self.registry)
+
+        # Refresh gap analyzer embeddings
+        self.gap_analyzer.agent_embeddings[agent_id] = (
+            self.gap_analyzer.embedding_generator.embed(
+                f"{spec.name}: {spec.description}. Domain: {spec.domain}"
+            )
+        )
+
+        # Track in lifecycle manager
+        self.lifecycle_manager.spawned_agents[agent_id] = {
+            "spawn_task_count": len(self.lifecycle_manager.task_history),
+            "spawn_time": __import__("datetime").datetime.utcnow().isoformat(),
+        }
+        self.lifecycle_manager.agent_performance[agent_id] = {
+            "activation_count": 0,
+            "success_count": 0,
+            "failure_count": 0,
+            "task_families": set(),
+        }
+
+    # Domain keyword map — used to detect what specialist to spawn
+    _DOMAIN_KEYWORDS: dict = {
+        "devops":         ["docker", "kubernetes", "k8s", "ci/cd", "pipeline", "terraform",
+                           "ansible", "helm", "deploy", "nginx", "cloud", "aws", "gcp", "azure",
+                           "container", "pod", "service mesh", "github actions", "gitlab ci"],
+        "data_analysis":  ["pandas", "numpy", "dataframe", "csv", "dataset", "plot", "chart",
+                           "visualize", "visualization", "statistics", "regression", "correlation",
+                           "machine learning", "sklearn", "seaborn", "matplotlib", "jupyter"],
+        "security":       ["security", "vulnerability", "exploit", "injection", "xss", "csrf",
+                           "authentication", "authorization", "oauth", "jwt", "encrypt", "hash",
+                           "penetration", "owasp", "cve", "audit", "hardening"],
+        "database":       ["sql", "query", "database", "schema", "table", "index", "join",
+                           "postgres", "postgresql", "mysql", "sqlite", "mongodb", "orm",
+                           "migration", "transaction", "stored procedure"],
+        "api":            ["fastapi", "flask", "express", "django rest", "rest api", "graphql",
+                           "openapi", "swagger", "endpoint", "webhook", "http client",
+                           "rate limit", "pagination", "versioning"],
+        "testing":        ["unit test", "integration test", "pytest", "jest", "vitest",
+                           "mock", "stub", "fixture", "tdd", "bdd", "coverage", "assert",
+                           "test suite", "end-to-end", "e2e"],
+        "documentation":  ["docstring", "jsdoc", "tsdoc", "readme", "sphinx", "mkdocs",
+                           "write docs", "document this", "add comments", "api reference",
+                           "architecture doc"],
+        "refactoring":    ["refactor", "code smell", "technical debt", "clean up",
+                           "solid principle", "dry principle", "design pattern",
+                           "restructure", "simplify", "decouple", "extract method"],
+        "mobile":         ["react native", "flutter", "swift", "kotlin", "ios", "android",
+                           "mobile app", "xcode", "gradle", "expo"],
+        "frontend":       ["react", "vue", "angular", "svelte", "css", "tailwind",
+                           "component", "ui", "ux", "html", "dom", "typescript frontend",
+                           "next.js", "nuxt", "vite"],
+        "blockchain":     ["solidity", "smart contract", "ethereum", "web3", "nft",
+                           "defi", "blockchain", "wallet", "token", "erc20"],
+        "ml_engineering": ["pytorch", "tensorflow", "keras", "model training", "fine-tune",
+                           "neural network", "transformer model", "llm", "embedding",
+                           "inference", "gpu", "cuda", "huggingface"],
+    }
+
+    def _detect_specialist_domain(self, task_text: str) -> Optional[str]:
+        """
+        Return the best-matching specialist domain for a task, or None if
+        no domain has enough keyword signal.
+        """
+        text = task_text.lower()
+        scores: dict[str, int] = {}
+        for domain, keywords in self._DOMAIN_KEYWORDS.items():
+            hits = sum(1 for kw in keywords if kw in text)
+            if hits > 0:
+                scores[domain] = hits
+        if not scores:
+            return None
+        return max(scores, key=scores.__getitem__)
+
     def _initialize_registry(self) -> AgentRegistry:
-        """Initialize or load agent registry."""
-        # Try to load existing registry
+        """Initialize or load agent registry.
+
+        Only three universal base agents are seeded here.
+        All specialist agents are spawned dynamically at runtime
+        when the router detects no good match for a task.
+        """
         try:
             registry = self.registry_store.load_registry()
         except Exception:
             registry = None
-        
+
         if registry and registry.agents:
             return registry
-        
-        # Create default registry with initial agents
+
         registry = AgentRegistry()
-        
-        # Add code_primary agent
+
         registry.add_agent(AgentSpec(
             agent_id="code_primary",
             name="Code Primary",
-            description="Primary coding agent for implementation, debugging, and architecture",
+            description="General-purpose coding agent: implementation, debugging, architecture",
             domain="coding",
             lifecycle_state=LifecycleState.HOT,
             tools=["repo_tool", "test_runner"],
-            tags=["coding", "implementation", "debugging"]
+            tags=["coding", "implementation", "debugging"],
         ))
-        
-        # Add web_research agent
+
         registry.add_agent(AgentSpec(
             agent_id="web_research",
             name="Web Research",
@@ -745,10 +856,9 @@ class Orchestrator:
             domain="research",
             lifecycle_state=LifecycleState.WARM,
             tools=["web_tool", "citation_checker"],
-            tags=["research", "documentation", "validation"]
+            tags=["research", "documentation", "validation"],
         ))
-        
-        # Add critic_verifier agent
+
         registry.add_agent(AgentSpec(
             agent_id="critic_verifier",
             name="Critic Verifier",
@@ -756,85 +866,36 @@ class Orchestrator:
             domain="verification",
             lifecycle_state=LifecycleState.WARM,
             tools=["test_runner", "citation_checker"],
-            tags=["verification", "testing", "quality"]
+            tags=["verification", "testing", "quality"],
         ))
-        
-        # Add devops agent
-        registry.add_agent(AgentSpec(
-            agent_id="devops",
-            name="DevOps",
-            description="CI/CD, containers, infrastructure-as-code, and deployment specialist",
-            domain="devops",
-            lifecycle_state=LifecycleState.WARM,
-            tools=["repo_tool", "shell_tool"],
-            tags=["devops", "docker", "kubernetes", "ci_cd", "terraform", "cloud"]
-        ))
-        
-        # Add data_analysis agent
-        registry.add_agent(AgentSpec(
-            agent_id="data_analysis",
-            name="Data Analysis",
-            description="Data analysis, statistics, visualization, and ML workflow specialist",
-            domain="data",
-            lifecycle_state=LifecycleState.WARM,
-            tools=["repo_tool", "data_tool"],
-            tags=["data", "pandas", "statistics", "visualization", "machine_learning"]
-        ))
-        
-        # Add security agent
-        registry.add_agent(AgentSpec(
-            agent_id="security",
-            name="Security",
-            description="Security review, vulnerability analysis, and hardening specialist",
-            domain="security_audit",
-            lifecycle_state=LifecycleState.WARM,
-            tools=["repo_tool", "web_tool", "citation_checker"],
-            tags=["security", "owasp", "vulnerability", "authentication", "cryptography"]
-        ))
-        
-        # Add sql agent
-        registry.add_agent(AgentSpec(
-            agent_id="sql",
-            name="SQL",
-            description="SQL queries, schema design, and database optimization specialist",
-            domain="database",
-            lifecycle_state=LifecycleState.WARM,
-            tools=["repo_tool", "data_tool"],
-            tags=["sql", "database", "postgresql", "mysql", "schema", "query_optimization"]
-        ))
-        
-        # Save registry
+
         self.registry_store.save_registry(registry)
-        
         return registry
     
     def _create_agent_instance(self, agent_spec: AgentSpec):
         """Create agent instance from spec.
-        
-        Uses known agent classes for base agents and DynamicAgent
-        for any spawned/specialist agents.
+
+        The three universal base agents use their hand-written classes.
+        Every other agent (spawned specialists) is instantiated via
+        AgentFactory, which uses the LLM to generate a focused system prompt.
         """
-        agent_map = {
+        base_agents = {
             "code_primary":   CodePrimaryAgent,
             "web_research":   WebResearchAgent,
             "critic_verifier": CriticVerifierAgent,
-            "devops":         DevOpsAgent,
-            "data_analysis":  DataAnalysisAgent,
-            "security":       SecurityAgent,
-            "sql":            SQLAgent,
         }
-        
-        agent_cls = agent_map.get(agent_spec.agent_id)
+
+        agent_cls = base_agents.get(agent_spec.agent_id)
         if agent_cls:
             return agent_cls(
                 agent_spec.agent_id,
                 agent_spec.name,
                 agent_spec.description,
                 self.llm_client,
-                agent_spec.tools
+                agent_spec.tools,
             )
-        
-        # Spawned / dynamic agents
+
+        # All spawned / dynamic agents go through the factory
         return self.agent_factory.create_agent_instance(agent_spec)
     
     def _collaborative_synthesis(
@@ -888,7 +949,7 @@ Focus on creating an answer that is MORE COMPLETE, MORE ACCURATE, and MORE INSIG
 Final synthesized answer:"""
         
         try:
-            final_answer = self.llm_client.generate(synthesis_prompt, max_tokens=800, temperature=0.4)
+            final_answer = self.llm_client.generate(synthesis_prompt, max_tokens=500, temperature=0.4)
         except Exception:
             # Fallback: return the best single-agent output
             final_answer = max(agent_outputs.values(), key=lambda o: len(o.get("output", "")))["output"]
