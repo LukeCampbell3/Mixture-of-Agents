@@ -29,11 +29,13 @@ class OllamaClient(LLMClient):
                 "num_predict": max_tokens,
             },
         }
+        # connect_timeout=10s, read_timeout scales with token budget (≥30s floor)
+        read_timeout = max(30, max_tokens * 0.25)
         with requests.post(
             f"{self.base_url}/api/generate",
             json=payload,
             stream=True,
-            timeout=300,
+            timeout=(10, read_timeout),
         ) as resp:
             resp.raise_for_status()
             for line in resp.iter_lines():
@@ -102,7 +104,7 @@ class OllamaClient(LLMClient):
         full_prompt = (
             f"{prompt}\n\nRespond with valid JSON matching this schema:\n{schema_str}\n\nJSON:"
         )
-        response = self.generate(full_prompt, max_tokens=2000, temperature=0.3)
+        response = self.generate(full_prompt, max_tokens=800, temperature=0.3)
 
         try:
             return json.loads(response)

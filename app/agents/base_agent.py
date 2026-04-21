@@ -85,7 +85,7 @@ class BaseAgent(ABC):
         
         # Get generation parameters (possibly modified by skill packs)
         temperature = modified_context.get("temperature", 0.7)
-        max_tokens = modified_context.get("max_tokens", 1500)
+        max_tokens = modified_context.get("max_tokens", 600)  # conservative default for local models
         
         # Generate response
         response = self.llm_client.generate(prompt, max_tokens=max_tokens, temperature=temperature)

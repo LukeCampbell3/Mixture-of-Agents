@@ -12,6 +12,10 @@ from app.models.uncertainty import UncertaintyEstimator
 from app.agents.code_primary import CodePrimaryAgent
 from app.agents.web_research import WebResearchAgent
 from app.agents.critic_verifier import CriticVerifierAgent
+from app.agents.devops_agent import DevOpsAgent
+from app.agents.data_analysis_agent import DataAnalysisAgent
+from app.agents.security_agent import SecurityAgent
+from app.agents.sql_agent import SQLAgent
 from app.storage.registry_store import RegistryStore
 from app.storage.artifact_store import ArtifactStore
 from app.calibration import ThreeLevelCalibrator
@@ -520,7 +524,7 @@ class Orchestrator:
             results = self.parallel_executor.execute_parallel(
                 tasks,
                 shared_context_obj,
-                timeout=120.0
+                timeout=60.0
             )
             
             # Collect outputs
@@ -638,7 +642,7 @@ class Orchestrator:
                 refinement_results = self.parallel_executor.execute_parallel(
                     refinement_tasks,
                     shared_context_obj,
-                    timeout=120.0
+                    timeout=60.0
                 )
                 
                 for result in refinement_results:
@@ -686,11 +690,14 @@ class Orchestrator:
         selected = []
         
         domain_pack_map = {
-            "coding": ["algorithm_optimization", "code_review", "debugging_mode", "security_focused"],
-            "research": ["fact_checking", "sorting_comparison", "architecture_comparison"],
-            "verification": ["logical_analysis", "quantitative_analysis", "code_review"],
+            "coding":         ["algorithm_optimization", "code_review", "debugging_mode", "security_focused"],
+            "research":       ["fact_checking", "sorting_comparison", "architecture_comparison"],
+            "verification":   ["logical_analysis", "quantitative_analysis", "code_review"],
             "security_audit": ["security_focused", "code_review"],
-            "api_migration": ["code_review", "implementation_with_research"],
+            "api_migration":  ["code_review", "implementation_with_research"],
+            "devops":         ["code_review", "security_focused", "implementation_with_research"],
+            "data":           ["quantitative_analysis", "algorithm_optimization"],
+            "database":       ["algorithm_optimization", "code_review"],
         }
         
         # Universal packs that apply to all agents
@@ -752,6 +759,50 @@ class Orchestrator:
             tags=["verification", "testing", "quality"]
         ))
         
+        # Add devops agent
+        registry.add_agent(AgentSpec(
+            agent_id="devops",
+            name="DevOps",
+            description="CI/CD, containers, infrastructure-as-code, and deployment specialist",
+            domain="devops",
+            lifecycle_state=LifecycleState.WARM,
+            tools=["repo_tool", "shell_tool"],
+            tags=["devops", "docker", "kubernetes", "ci_cd", "terraform", "cloud"]
+        ))
+        
+        # Add data_analysis agent
+        registry.add_agent(AgentSpec(
+            agent_id="data_analysis",
+            name="Data Analysis",
+            description="Data analysis, statistics, visualization, and ML workflow specialist",
+            domain="data",
+            lifecycle_state=LifecycleState.WARM,
+            tools=["repo_tool", "data_tool"],
+            tags=["data", "pandas", "statistics", "visualization", "machine_learning"]
+        ))
+        
+        # Add security agent
+        registry.add_agent(AgentSpec(
+            agent_id="security",
+            name="Security",
+            description="Security review, vulnerability analysis, and hardening specialist",
+            domain="security_audit",
+            lifecycle_state=LifecycleState.WARM,
+            tools=["repo_tool", "web_tool", "citation_checker"],
+            tags=["security", "owasp", "vulnerability", "authentication", "cryptography"]
+        ))
+        
+        # Add sql agent
+        registry.add_agent(AgentSpec(
+            agent_id="sql",
+            name="SQL",
+            description="SQL queries, schema design, and database optimization specialist",
+            domain="database",
+            lifecycle_state=LifecycleState.WARM,
+            tools=["repo_tool", "data_tool"],
+            tags=["sql", "database", "postgresql", "mysql", "schema", "query_optimization"]
+        ))
+        
         # Save registry
         self.registry_store.save_registry(registry)
         
@@ -764,9 +815,13 @@ class Orchestrator:
         for any spawned/specialist agents.
         """
         agent_map = {
-            "code_primary": CodePrimaryAgent,
-            "web_research": WebResearchAgent,
+            "code_primary":   CodePrimaryAgent,
+            "web_research":   WebResearchAgent,
             "critic_verifier": CriticVerifierAgent,
+            "devops":         DevOpsAgent,
+            "data_analysis":  DataAnalysisAgent,
+            "security":       SecurityAgent,
+            "sql":            SQLAgent,
         }
         
         agent_cls = agent_map.get(agent_spec.agent_id)
@@ -833,7 +888,7 @@ Focus on creating an answer that is MORE COMPLETE, MORE ACCURATE, and MORE INSIG
 Final synthesized answer:"""
         
         try:
-            final_answer = self.llm_client.generate(synthesis_prompt, max_tokens=1500, temperature=0.4)
+            final_answer = self.llm_client.generate(synthesis_prompt, max_tokens=800, temperature=0.4)
         except Exception:
             # Fallback: return the best single-agent output
             final_answer = max(agent_outputs.values(), key=lambda o: len(o.get("output", "")))["output"]

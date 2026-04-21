@@ -132,25 +132,44 @@ def _select_models(ram_gb: float, available: list, laptop: bool = True) -> dict:
     """
     Pick router + worker models based on available RAM and what is pulled.
     Falls back gracefully when preferred models are not yet downloaded.
+
+    On laptops we always cap at 1.5b — the 7b model is too slow on CPU
+    regardless of how much RAM is installed.
     """
     def pulled(name):
         return any(name in m for m in available)
 
-    # Worker selection — on laptops cap at 1.5b regardless of RAM
-    if not laptop and ram_gb >= 12 and pulled("qwen2.5:7b"):
-        worker = "qwen2.5:7b"
-    elif pulled("qwen2.5-coder:1.5b"):
-        worker = "qwen2.5-coder:1.5b"
-    elif pulled("qwen2.5:1.5b"):
-        worker = "qwen2.5:1.5b"
+    # Worker selection
+    if laptop:
+        # Laptop: always use the fastest small model available
+        if pulled("qwen2.5-coder:1.5b"):
+            worker = "qwen2.5-coder:1.5b"
+        elif pulled("qwen2.5:1.5b"):
+            worker = "qwen2.5:1.5b"
+        elif pulled("qwen2.5:0.5b"):
+            worker = "qwen2.5:0.5b"
+        else:
+            worker = "qwen2.5-coder:1.5b"   # will be pulled on first run
     else:
-        worker = "qwen2.5-coder:1.5b"   # will be pulled on first run
+        # Desktop / server: scale with RAM
+        if ram_gb >= 12 and pulled("qwen2.5:7b"):
+            worker = "qwen2.5:7b"
+        elif pulled("qwen2.5-coder:1.5b"):
+            worker = "qwen2.5-coder:1.5b"
+        elif pulled("qwen2.5:1.5b"):
+            worker = "qwen2.5:1.5b"
+        else:
+            worker = "qwen2.5-coder:1.5b"
 
-    # Router selection
+    # Router selection — always use the smallest available model
     if pulled("qwen2.5:0.5b"):
         router = "qwen2.5:0.5b"
+    elif pulled("qwen2.5:1.5b"):
+        router = "qwen2.5:1.5b"
+    elif pulled("qwen2.5-coder:1.5b"):
+        router = "qwen2.5-coder:1.5b"
     else:
-        router = worker                  # reuse worker if 0.5b not available
+        router = worker   # last resort: reuse worker
 
     return {"worker": worker, "router": router}
 

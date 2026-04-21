@@ -3,7 +3,7 @@
 import asyncio
 import threading
 from typing import Dict, Any, List, Optional, Callable
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import ThreadPoolExecutor, Future, wait as futures_wait, FIRST_COMPLETED
 from dataclasses import dataclass
 import time
 
@@ -106,7 +106,7 @@ class ParallelExecutor:
         Args:
             tasks: List of agent tasks to execute
             shared_context: Shared context for collaboration
-            timeout: Optional timeout in seconds for each task
+            timeout: Optional wall-clock timeout in seconds for the entire batch
         
         Returns:
             List of agent results
@@ -114,30 +114,38 @@ class ParallelExecutor:
         if not tasks:
             return []
         
-        # Submit all tasks
-        futures: Dict[Future, AgentTask] = {}
+        # Submit all tasks (no per-task timeout inside the worker — we enforce
+        # the deadline at the batch level using futures_wait below)
+        future_to_task: Dict[Future, AgentTask] = {}
         for task in tasks:
             future = self.executor.submit(
                 self._execute_agent_task,
                 task,
                 shared_context,
-                timeout
+                None,  # no inner timeout; outer deadline handles it
             )
-            futures[future] = task
+            future_to_task[future] = task
         
-        # Collect results as they complete
+        # Wait for all futures, respecting the wall-clock deadline
+        if timeout is not None:
+            done, not_done = futures_wait(
+                future_to_task.keys(), timeout=timeout
+            )
+        else:
+            done = set(future_to_task.keys())
+            not_done = set()
+        
         results = []
-        for future in futures:
-            task = futures[future]
+        
+        # Collect completed futures
+        for future in done:
+            task = future_to_task[future]
             try:
-                result = future.result(timeout=timeout)
+                result = future.result(timeout=0)  # already done, no wait
                 results.append(result)
-                
-                # Add to shared context immediately
                 if result.success:
                     shared_context.add_agent_output(result.agent_id, result.output)
             except Exception as e:
-                # Task failed or timed out
                 results.append(AgentResult(
                     agent_id=task.agent_id,
                     output={},
@@ -145,6 +153,18 @@ class ParallelExecutor:
                     success=False,
                     error=str(e)
                 ))
+        
+        # Cancel and record timed-out futures
+        for future in not_done:
+            task = future_to_task[future]
+            future.cancel()
+            results.append(AgentResult(
+                agent_id=task.agent_id,
+                output={},
+                elapsed_time=timeout or 0.0,
+                success=False,
+                error=f"Agent timed out after {timeout}s"
+            ))
         
         return results
     
