@@ -164,9 +164,11 @@ Example task it will handle: {task_text}
 
 Requirements for the system prompt:
 - Start with "You are a {domain} specialist agent."
-- Include a RULES section that says: always write complete working code in markdown code blocks
+- Include a RULES section with these exact rules:
+  1. Always write complete working code
+  2. Always save code to files using write_file tool calls — emit the tool call BEFORE the markdown block
+  3. Use a descriptive snake_case filename
 - List 4-6 specific areas of expertise relevant to {domain}
-- Describe the expected output format (code block first, then brief explanation)
 - Keep it under 200 words
 - Do NOT include meta-commentary — write the prompt itself, nothing else
 
@@ -208,7 +210,9 @@ Review the prior context and build upon it as needed."""
 
 RULES:
 - ALWAYS write complete, working code — never just describe what code should do.
-- Use markdown code blocks with the correct language tag.
+- ALWAYS save code to files using write_file tool calls — emit the tool call BEFORE the markdown block.
+- Choose a descriptive snake_case filename (e.g. graph_search.py, neural_net.py).
+- Use markdown code blocks with the correct language tag after the tool call.
 - After the code, add a brief explanation (2-5 sentences).
 - Review any conversation history provided and build upon prior work when relevant.
 
@@ -217,6 +221,8 @@ Expertise: {domain_display} tasks including implementation, debugging, and best 
 Example task: {task_text[:100]}{history_context}
 
 Output format:
+<tool_call>{{"tool": "write_file", "path": "solution.py", "content": "# complete code here"}}</tool_call>
+
 ```<language>
 # complete code here
 ```

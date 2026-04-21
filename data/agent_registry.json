@@ -16,8 +16,8 @@
         "implementation",
         "debugging"
       ],
-      "created_at": "2026-04-21T01:58:56.252156",
-      "updated_at": "2026-04-21T01:58:56.252156",
+      "created_at": "2026-04-21T15:59:48.739827",
+      "updated_at": "2026-04-21T15:59:48.739827",
       "parent_lineage": null,
       "target_cluster": null,
       "expected_activation_rate": 0.0,
@@ -43,8 +43,8 @@
         "documentation",
         "validation"
       ],
-      "created_at": "2026-04-21T01:58:56.252156",
-      "updated_at": "2026-04-21T01:58:56.252156",
+      "created_at": "2026-04-21T15:59:48.739827",
+      "updated_at": "2026-04-21T15:59:48.739827",
       "parent_lineage": null,
       "target_cluster": null,
       "expected_activation_rate": 0.0,
@@ -70,61 +70,8 @@
         "testing",
         "quality"
       ],
-      "created_at": "2026-04-21T01:58:56.252156",
-      "updated_at": "2026-04-21T01:58:56.252156",
-      "parent_lineage": null,
-      "target_cluster": null,
-      "expected_activation_rate": 0.0,
-      "total_activations": 0,
-      "successful_activations": 0,
-      "average_quality_lift": 0.0,
-      "average_token_cost": 0.0,
-      "calibration_score": 0.5,
-      "overlap_with": {}
-    },
-    "specialist_ml_engineering": {
-      "agent_id": "specialist_ml_engineering",
-      "name": "Ml Engineering Specialist",
-      "description": "Dynamically spawned specialist for ml_engineering tasks. Created in response to: give me a function that handles transformer node activation using switch transformer",
-      "domain": "ml_engineering",
-      "lifecycle_state": "probationary",
-      "tools": [
-        "repo_tool",
-        "web_tool"
-      ],
-      "tags": [
-        "ml_engineering",
-        "spawned",
-        "dynamic"
-      ],
-      "created_at": "2026-04-21T01:59:05.184957",
-      "updated_at": "2026-04-21T01:59:05.184957",
-      "parent_lineage": null,
-      "target_cluster": null,
-      "expected_activation_rate": 0.0,
-      "total_activations": 0,
-      "successful_activations": 0,
-      "average_quality_lift": 0.0,
-      "average_token_cost": 0.0,
-      "calibration_score": 0.5,
-      "overlap_with": {}
-    },
-    "spawned_general_general": {
-      "agent_id": "spawned_general_general",
-      "name": "Specialized General Agent",
-      "description": "Agent spawned to handle general tasks in cluster general",
-      "domain": "general",
-      "lifecycle_state": "probationary",
-      "tools": [
-        "repo_tool",
-        "web_tool"
-      ],
-      "tags": [
-        "spawned",
-        "specialist"
-      ],
-      "created_at": "2026-04-21T01:59:05.218763",
-      "updated_at": "2026-04-21T01:59:05.218763",
+      "created_at": "2026-04-21T15:59:48.739827",
+      "updated_at": "2026-04-21T15:59:48.739827",
       "parent_lineage": null,
       "target_cluster": null,
       "expected_activation_rate": 0.0,
@@ -136,5 +83,5 @@
       "overlap_with": {}
     }
   },
-  "last_updated": "2026-04-21T01:59:05.218763"
+  "last_updated": "2026-04-21T15:59:48.739827"
 }

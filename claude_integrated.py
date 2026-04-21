@@ -718,10 +718,15 @@ class AgenticNetworkClient:
             if not self.initialize_orchestrator():
                 return ("Error: Could not initialize Agentic Network.", [])
 
-        # Build conversation context from history
-        history_block = self._build_history_block()
+        # Detect topic shift — if the new request is off-topic, suppress history
+        topic_shifted = self._detect_topic_shift(user_input)
+        if topic_shifted:
+            print(Color.dim("  [context] Topic shift detected — starting fresh context"))
+            history_block = self._build_topic_shift_note()
+        else:
+            history_block = self._build_history_block()
 
-        # Combine: workspace context + current request (history goes to orchestrator separately)
+        # Combine: workspace context + current request
         parts = []
         if context:
             parts.append(f"WORKSPACE CONTEXT:\n{context}")
@@ -745,19 +750,101 @@ class AgenticNetworkClient:
 
         return answer, getattr(result, "pending_tool_calls", [])
 
+    # ------------------------------------------------------------------
+    # Topic shift detection
+    # ------------------------------------------------------------------
+
+    # Keyword clusters used for lightweight topic fingerprinting
+    _TOPIC_CLUSTERS = {
+        "data_structures": ["linked list", "binary tree", "stack", "queue", "heap",
+                            "graph", "trie", "hash map", "array", "node", "pointer"],
+        "algorithms":      ["sort", "search", "recursion", "dynamic programming",
+                            "big o", "complexity", "algorithm", "traverse"],
+        "python":          ["python", "def ", "class ", "import ", "pip", "venv",
+                            "django", "flask", "pandas", "numpy"],
+        "excel":           ["excel", "spreadsheet", "cell", "formula", "pivot",
+                            "vlookup", "worksheet", "column", "row", "sort by"],
+        "web":             ["html", "css", "javascript", "react", "api", "http",
+                            "endpoint", "frontend", "backend", "rest"],
+        "database":        ["sql", "query", "table", "join", "index", "postgres",
+                            "mysql", "schema", "migration"],
+        "devops":          ["docker", "kubernetes", "ci/cd", "deploy", "pipeline",
+                            "terraform", "ansible", "nginx"],
+        "ml":              ["pytorch", "tensorflow", "model", "training", "neural",
+                            "embedding", "transformer", "dataset", "loss"],
+    }
+
+    def _topic_fingerprint(self, text: str) -> set:
+        """Return the set of topic cluster names that match the text."""
+        t = text.lower()
+        return {
+            cluster
+            for cluster, keywords in self._TOPIC_CLUSTERS.items()
+            if any(kw in t for kw in keywords)
+        }
+
+    def _detect_topic_shift(self, new_request: str) -> bool:
+        """Return True if the new request is clearly off-topic from recent history.
+
+        Uses keyword cluster overlap: if the new request shares no clusters with
+        the last 2 user turns, it's a topic shift.
+        Falls back to False (no shift) when history is empty or too short.
+        """
+        if len(self.history) < 2:
+            return False
+
+        new_clusters = self._topic_fingerprint(new_request)
+        if not new_clusters:
+            # No strong topic signal — don't suppress history
+            return False
+
+        # Collect clusters from the last 2 user messages
+        recent_user_msgs = [
+            m["content"] for m in self.history if m["role"] == "user"
+        ][-2:]
+        recent_clusters: set = set()
+        for msg in recent_user_msgs:
+            recent_clusters |= self._topic_fingerprint(msg)
+
+        if not recent_clusters:
+            return False
+
+        # Shift if zero overlap between new topic and recent topics
+        return len(new_clusters & recent_clusters) == 0
+
     def _build_history_block(self) -> str:
-        """Format conversation history as a context block for the LLM."""
+        """Format recent conversation history as a context block.
+
+        Only includes turns that are topically relevant — assistant responses
+        are truncated to 300 chars to keep the prompt lean.
+        """
         if not self.history:
             return ""
         lines = ["CONVERSATION HISTORY (most recent last):"]
         for msg in self.history:
             role = "User" if msg["role"] == "user" else "Assistant"
-            # Truncate long assistant responses to keep context manageable
             content = msg["content"]
-            if msg["role"] == "assistant" and len(content) > 600:
-                content = content[:600] + "... [truncated]"
+            if msg["role"] == "assistant" and len(content) > 300:
+                content = content[:300] + "... [truncated]"
             lines.append(f"{role}: {content}")
         return "\n".join(lines)
+
+    def _build_topic_shift_note(self) -> str:
+        """Return a minimal context note when a topic shift is detected.
+
+        Tells the model the previous topic without injecting its content,
+        so it doesn't bleed into the new answer.
+        """
+        recent_user = [m["content"] for m in self.history if m["role"] == "user"]
+        if not recent_user:
+            return ""
+        last_topic = recent_user[-1][:80].strip()
+        return (
+            f"NOTE: The previous conversation was about a different topic "
+            f"(\"{last_topic}...\"). "
+            f"Answer the current question independently — do not reference or apply "
+            f"concepts from the previous topic unless explicitly asked."
+        )
 
     def clear_history(self):
         """Clear conversation history."""

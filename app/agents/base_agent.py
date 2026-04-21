@@ -6,14 +6,16 @@ from app.models.llm_client import LLMClient
 from app.tools.filesystem import parse_tool_calls
 
 
-# Compact tool call instructions — injected only when repo_tool is available
+# Tool call instructions — injected when repo_tool is available.
+# Directive: agents MUST write code to files, not just markdown blocks.
 _TOOL_CALL_INSTRUCTIONS = """
-FILE OPS (emit after your answer):
-<tool_call>{"tool": "write_file", "path": "path/file.py", "content": "full content"}</tool_call>
-<tool_call>{"tool": "edit_file", "path": "path/file.py", "old_str": "exact text", "new_str": "replacement"}</tool_call>
-<tool_call>{"tool": "delete_file", "path": "path/file.py"}</tool_call>
-<tool_call>{"tool": "mkdir", "path": "path/dir"}</tool_call>
-Rules: relative paths only. write_file = complete content. edit_file old_str must match exactly.
+FILE OPERATIONS — you MUST use these for any code you produce:
+Always emit write_file BEFORE the markdown block. Use a descriptive filename.
+<tool_call>{"tool": "write_file", "path": "filename.py", "content": "complete file content here"}</tool_call>
+<tool_call>{"tool": "edit_file", "path": "filename.py", "old_str": "exact text to replace", "new_str": "new text"}</tool_call>
+<tool_call>{"tool": "delete_file", "path": "filename.py"}</tool_call>
+<tool_call>{"tool": "mkdir", "path": "dirname"}</tool_call>
+Rules: relative paths only. write_file requires COMPLETE file content. edit_file old_str must match exactly.
 """
 
 
