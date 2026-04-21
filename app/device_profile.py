@@ -181,24 +181,18 @@ def _build_profile(force: bool = False) -> dict:
     avail  = _available_ollama_models()
     models = _select_models(ram, avail, laptop=laptop)
 
-    # Parallelism: off on laptops / low-RAM machines
-    parallel = (not laptop) and (ram >= 16) and (cores >= 8)
+    # Parallelism and agent count are no longer capped for laptops.
+    # The user controls these via /concurrency or /config set.
+    parallel   = cores >= 4
+    max_agents = max(2, min(cores // 2, 4))
 
-    # Budget mode
+    # Budget mode scales with RAM only
     if ram < 8:
         budget = "low"
-    elif ram < 16 or laptop:
+    elif ram < 16:
         budget = "balanced"
     else:
         budget = "thorough"
-
-    # Max agents
-    if laptop or ram < 8:
-        max_agents = 1
-    elif ram < 16:
-        max_agents = 2
-    else:
-        max_agents = 3
 
     profile = {
         "hardware": {
@@ -216,8 +210,8 @@ def _build_profile(force: bool = False) -> dict:
             "enable_parallel":    parallel,
             "max_parallel_agents": max_agents,
             "budget_mode":        budget,
-            "max_validation_retries": 1 if laptop else 2,
-            "verifier_on_first_pass": not laptop,
+            "max_validation_retries": 2,
+            "verifier_on_first_pass": True,
         },
         "web_search": {
             "enabled":                    True,
@@ -226,11 +220,11 @@ def _build_profile(force: bool = False) -> dict:
             "max_results":                3,
         },
         "routing": {
-            "default_max_agents":   1 if laptop else max_agents,
-            "mixed_task_max_agents": min(2, max_agents),
+            "default_max_agents":    max_agents,
+            "mixed_task_max_agents": max_agents,
         },
-        "throughput": {},   # filled in below
-        "profile_version": 1,
+        "throughput": {},
+        "profile_version": 2,
     }
 
     # Quick throughput probe (only if Ollama is reachable and models are warm)

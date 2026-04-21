@@ -652,15 +652,23 @@ class AgenticNetworkClient:
         self.initialize_orchestrator()
 
     def initialize_orchestrator(self):
-        """Initialize the orchestrator using the device profile."""
+        """Initialize the orchestrator using the device profile + active config overrides."""
         try:
             rt = self.device_profile["runtime"]
-
-            # Auto-select provider if still set to "auto"
             active_config = get_active_config()
+
             provider = active_config.get("llm_provider", "auto")
             if provider == "auto":
                 provider = "ollama"
+
+            # Active config overrides device profile for concurrency settings
+            enable_parallel = active_config.get("enable_parallel", rt.get("enable_parallel", True))
+            max_agents      = active_config.get("max_parallel_agents", rt.get("max_parallel_agents", 2))
+
+            # Coerce types (config values are stored as strings via /config set)
+            if isinstance(enable_parallel, str):
+                enable_parallel = enable_parallel.lower() not in ("false", "0", "off")
+            max_agents = int(max_agents)
 
             self.orchestrator = Orchestrator(
                 llm_provider=provider,
@@ -668,22 +676,22 @@ class AgenticNetworkClient:
                 llm_base_url=active_config.get("llm_base_url") or "http://localhost:11434",
                 router_model=self.router_model,
                 budget_mode=rt.get("budget_mode", "balanced"),
-                enable_parallel=rt.get("enable_parallel", False),
-                max_parallel_agents=rt.get("max_parallel_agents", 1),
+                enable_parallel=enable_parallel,
+                max_parallel_agents=max_agents,
             )
 
             print(Color.green("✅ Agentic Network initialized"))
             print(Color.dim(f"  Worker : {self.worker_model}"))
             if self.router_model != self.worker_model:
                 print(Color.dim(f"  Router : {self.router_model}"))
-            print(Color.dim(f"  Parallel: {rt.get('enable_parallel', False)}  "
-                            f"Max agents: {rt.get('max_parallel_agents', 1)}  "
+            print(Color.dim(f"  Parallel: {enable_parallel}  "
+                            f"Max agents: {max_agents}  "
                             f"Budget: {rt.get('budget_mode', 'balanced')}"))
             self.ai_enabled = True
             return True
 
         except Exception as e:
-            print(Color.red(f"❌ Error initializing Agentic Network: {e}"))
+            print(Color.red(f"Error initializing Agentic Network: {e}"))
             self.ai_enabled = False
             return False
 
@@ -752,9 +760,10 @@ def print_help():
             "/context [path], /#": "Get workspace context from path (default: current directory)"
         },
         "Agentic Network": {
-            "/agents": "Show agent information",
+            "/agents": "Show agent status and full registry",
             "/reload": "Reload agentic network configuration",
-            "/test": "Test agentic network with a simple request"
+            "/test": "Test agentic network with a simple request",
+            "/concurrency [n|off]": "Set parallel agents (e.g. /concurrency 3) or disable"
         },
         "Ollama Management": {
             "/ollama status": "Check Ollama status",
@@ -924,6 +933,13 @@ def main():
             print(Color.green("Agentic Network Status:"))
             for key, value in agent_info.items():
                 print(f"  {key}: {value}")
+            # Also show live registry
+            if agentic_client.orchestrator:
+                reg = agentic_client.orchestrator.registry
+                print(Color.green(f"\nAgent Registry ({len(reg.agents)} agents):"))
+                for aid, spec in reg.agents.items():
+                    tag = " [base]" if aid in ("code_primary", "web_research", "critic_verifier") else " [spawned]"
+                    print(f"  {Color.blue(aid):<35} domain={spec.domain:<18} state={spec.lifecycle_state}{tag}")
             continue
 
         if cmd == "/reload":
@@ -932,6 +948,40 @@ def main():
                 print(Color.green("Configuration reloaded successfully"))
             else:
                 print(Color.red("Failed to reload configuration"))
+            continue
+
+        if cmd.startswith("/concurrency"):
+            # /concurrency              — show current settings
+            # /concurrency <n>          — set max_parallel_agents to n, enable parallel
+            # /concurrency off          — disable parallel, max_agents=1
+            parts = cmd.split()
+            if len(parts) == 1:
+                rt = profile["runtime"]
+                print(Color.green("Concurrency settings:"))
+                print(f"  enable_parallel:    {rt['enable_parallel']}")
+                print(f"  max_parallel_agents: {rt['max_parallel_agents']}")
+                print(f"  budget_mode:        {rt['budget_mode']}")
+                print(Color.dim("  Use: /concurrency <n>  or  /concurrency off"))
+            elif parts[1].lower() == "off":
+                profile["runtime"]["enable_parallel"] = False
+                profile["runtime"]["max_parallel_agents"] = 1
+                set_active_config("enable_parallel", False)
+                set_active_config("max_parallel_agents", 1)
+                agentic_client.initialize_orchestrator()
+                print(Color.yellow("Parallel disabled. Single-agent mode."))
+            else:
+                try:
+                    n = int(parts[1])
+                    if n < 1 or n > 16:
+                        raise ValueError
+                    profile["runtime"]["enable_parallel"] = n > 1
+                    profile["runtime"]["max_parallel_agents"] = n
+                    set_active_config("enable_parallel", n > 1)
+                    set_active_config("max_parallel_agents", n)
+                    agentic_client.initialize_orchestrator()
+                    print(Color.green(f"Concurrency set to {n} agent(s), parallel={'on' if n > 1 else 'off'}."))
+                except ValueError:
+                    print(Color.red("Usage: /concurrency <number 1-16>  or  /concurrency off"))
             continue
 
         if cmd == "/test":
@@ -968,10 +1018,11 @@ def main():
                 key = parts[2]
                 value = " ".join(parts[3:])
                 if set_active_config(key, value):
-                    print(Color.green(f"Configuration updated: {key}"))
-                    # Reload orchestrator if config changed
-                    if key in ["llm_provider", "llm_model", "llm_base_url", "budget_mode"]:
-                        print(Color.yellow("Reloading Agentic Network with new configuration..."))
+                    print(Color.green(f"Configuration updated: {key} = {value}"))
+                    # Reload orchestrator if any runtime setting changed
+                    if key in ["llm_provider", "llm_model", "llm_base_url", "budget_mode",
+                               "enable_parallel", "max_parallel_agents"]:
+                        print(Color.yellow("Reloading Agentic Network..."))
                         agentic_client.initialize_orchestrator()
                 else:
                     print(Color.red("Failed to update configuration"))
