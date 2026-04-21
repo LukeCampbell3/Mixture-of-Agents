@@ -7,6 +7,8 @@ Agents emit tool calls in their response using a structured block:
     </tool_call>
 
 This module parses those blocks and executes the operations safely.
+Streaming execution is supported: call stream_execute() to parse and
+run operations as they arrive rather than waiting for the full response.
 """
 
 import os
@@ -14,7 +16,7 @@ import re
 import json
 import difflib
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Iterator
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +86,50 @@ def parse_tool_calls(response_text: str) -> List[FileOperation]:
     return ops
 
 
+def stream_parse_tool_calls(token_iterator: Iterator[str]) -> Iterator[FileOperation]:
+    """
+    Parse tool calls from a streaming token iterator.
+
+    Yields FileOperation objects as soon as each complete <tool_call>...</tool_call>
+    block is received, without waiting for the full response.
+
+    Single-threaded: consumes the iterator directly, buffering only what's
+    needed to detect the open/close tags.
+
+    Usage:
+        for op in stream_parse_tool_calls(ollama_token_stream):
+            executor.execute(op)
+    """
+    OPEN  = "<tool_call>"
+    CLOSE = "</tool_call>"
+    buf = ""
+
+    for token in token_iterator:
+        buf += token
+
+        # Process as many complete blocks as are present in the buffer
+        while True:
+            lo = buf.lower().find(OPEN)
+            if lo == -1:
+                # No open tag yet — keep only a tail in case the tag spans tokens
+                buf = buf[-(len(OPEN) - 1):]
+                break
+
+            lc = buf.lower().find(CLOSE, lo + len(OPEN))
+            if lc == -1:
+                # Open tag found but close tag not yet arrived — keep from open tag
+                buf = buf[lo:]
+                break
+
+            # Complete block found
+            inner = buf[lo + len(OPEN): lc].strip()
+            buf = buf[lc + len(CLOSE):]   # advance past the close tag
+
+            op = _parse_json_block(inner)
+            if op:
+                yield op
+
+
 def _parse_json_block(text: str) -> Optional[FileOperation]:
     """Parse a single JSON tool call block."""
     try:
@@ -136,6 +182,10 @@ class FilesystemExecutor:
 
         if op.tool == "write_file":
             if os.path.exists(full):
+                # Only read file if it's small (< 100KB) to avoid slow previews
+                file_size = os.path.getsize(full)
+                if file_size > 100 * 1024:
+                    return f"[WRITE] {op.path} ({file_size // 1024} KB - skipping large file preview)"
                 old = open(full, encoding="utf-8", errors="replace").read()
                 return _unified_diff(old, op.content, op.path)
             else:
@@ -149,6 +199,10 @@ class FilesystemExecutor:
         elif op.tool == "edit_file":
             if not os.path.exists(full):
                 return f"[ERROR] File does not exist: {op.path}"
+            # Only read file if it's small (< 100KB)
+            file_size = os.path.getsize(full)
+            if file_size > 100 * 1024:
+                return f"[EDIT] {op.path} ({file_size // 1024} KB - skipping large file preview)"
             old = open(full, encoding="utf-8", errors="replace").read()
             if op.old_str not in old:
                 return f"[ERROR] old_str not found in {op.path}"
@@ -191,27 +245,81 @@ class FilesystemExecutor:
         except Exception as e:
             return OperationResult(op, False, f"Exception: {e}")
 
-    def execute_all(self, ops: List[FileOperation]) -> List[OperationResult]:
-        return [self.execute(op) for op in ops]
+    def execute_all(self, ops: List[FileOperation], batch_mode: bool = False) -> List[OperationResult]:
+        """Execute multiple file operations.
+        
+        Args:
+            ops: List of operations to execute
+            batch_mode: If True, skip individual result collection for speed
+        """
+        if batch_mode:
+            # Fast path - just execute without collecting detailed results
+            results = []
+            for op in ops:
+                try:
+                    full = self.resolve(op.path)
+                    if op.tool == "write_file":
+                        self._write_fast(op, full)
+                    elif op.tool == "edit_file":
+                        self._edit_fast(op, full)
+                    elif op.tool == "delete_file":
+                        self._delete_fast(op, full)
+                    elif op.tool == "mkdir":
+                        self._mkdir_fast(op, full)
+                    results.append(OperationResult(op, True, f"Executed: {op.path}"))
+                except Exception as e:
+                    results.append(OperationResult(op, False, f"Exception: {e}"))
+            return results
+        else:
+            return [self.execute(op) for op in ops]
+
+    # Fast execution methods (no diff generation)
+    def _write_fast(self, op: FileOperation, full: str) -> None:
+        os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(op.content)
+
+    def _edit_fast(self, op: FileOperation, full: str) -> None:
+        with open(full, "r", encoding="utf-8") as f:
+            old = f.read()
+        new_content = old.replace(op.old_str, op.new_str, 1)
+        with open(full, "w", encoding="utf-8") as f:
+            f.write(new_content)
+
+    def _delete_fast(self, op: FileOperation, full: str) -> None:
+        os.remove(full)
+
+    def _mkdir_fast(self, op: FileOperation, full: str) -> None:
+        os.makedirs(full, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Individual operations
     # ------------------------------------------------------------------
 
     def _write(self, op: FileOperation, full: str) -> OperationResult:
+        # Only read existing file if it's small (< 100KB) for diff generation
         old = ""
         if os.path.exists(full):
-            old = open(full, encoding="utf-8", errors="replace").read()
+            file_size = os.path.getsize(full)
+            if file_size <= 100 * 1024:
+                old = open(full, encoding="utf-8", errors="replace").read()
         os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
         with open(full, "w", encoding="utf-8") as f:
             f.write(op.content)
-        diff = _unified_diff(old, op.content, op.path)
+        # Only generate diff if we have old content
+        diff = ""
+        if old:
+            diff = _unified_diff(old, op.content, op.path)
         verb = "Updated" if old else "Created"
         return OperationResult(op, True, f"{verb}: {op.path}", diff)
 
     def _edit(self, op: FileOperation, full: str) -> OperationResult:
         if not os.path.exists(full):
             return OperationResult(op, False, f"File not found: {op.path}")
+        # Only read file if it's small (< 100KB)
+        file_size = os.path.getsize(full)
+        if file_size > 100 * 1024:
+            return OperationResult(op, False, f"File too large for edit: {op.path} ({file_size // 1024} KB)")
         old = open(full, encoding="utf-8", errors="replace").read()
         if op.old_str not in old:
             return OperationResult(op, False,
@@ -235,6 +343,10 @@ class FilesystemExecutor:
     def _read(self, op: FileOperation, full: str) -> OperationResult:
         if not os.path.exists(full):
             return OperationResult(op, False, f"File not found: {op.path}")
+        file_size = os.path.getsize(full)
+        if file_size > 100 * 1024:
+            return OperationResult(op, True, f"Read: {op.path} ({file_size // 1024} KB - large file, content truncated)",
+                                   diff=f"[File too large to display: {file_size // 1024} KB]")
         content = open(full, encoding="utf-8", errors="replace").read()
         return OperationResult(op, True, f"Read: {op.path}",
                                diff=content[:2000])

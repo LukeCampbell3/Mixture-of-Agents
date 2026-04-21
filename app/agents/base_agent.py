@@ -6,38 +6,14 @@ from app.models.llm_client import LLMClient
 from app.tools.filesystem import parse_tool_calls
 
 
-# Tool call instruction block injected into every prompt when file tools are available
+# Compact tool call instructions — injected only when repo_tool is available
 _TOOL_CALL_INSTRUCTIONS = """
-FILE OPERATIONS:
-You can create, edit, or delete files by emitting tool calls in your response.
-Use this format for each operation (one per block):
-
-To CREATE or OVERWRITE a file:
-<tool_call>
-{"tool": "write_file", "path": "relative/path/to/file.py", "content": "full file content here"}
-</tool_call>
-
-To EDIT part of an existing file (surgical patch):
-<tool_call>
-{"tool": "edit_file", "path": "relative/path/to/file.py", "old_str": "exact text to replace", "new_str": "replacement text"}
-</tool_call>
-
-To DELETE a file:
-<tool_call>
-{"tool": "delete_file", "path": "relative/path/to/file.py"}
-</tool_call>
-
-To CREATE a directory:
-<tool_call>
-{"tool": "mkdir", "path": "relative/path/to/dir"}
-</tool_call>
-
-RULES:
-- Always use relative paths from the workspace root.
-- For write_file, include the COMPLETE file content — never truncate.
-- For edit_file, old_str must match exactly (including whitespace).
-- Emit tool calls AFTER your explanation, not before.
-- You may emit multiple tool calls in one response.
+FILE OPS (emit after your answer):
+<tool_call>{"tool": "write_file", "path": "path/file.py", "content": "full content"}</tool_call>
+<tool_call>{"tool": "edit_file", "path": "path/file.py", "old_str": "exact text", "new_str": "replacement"}</tool_call>
+<tool_call>{"tool": "delete_file", "path": "path/file.py"}</tool_call>
+<tool_call>{"tool": "mkdir", "path": "path/dir"}</tool_call>
+Rules: relative paths only. write_file = complete content. edit_file old_str must match exactly.
 """
 
 
@@ -64,7 +40,13 @@ class BaseAgent(ABC):
         pass
 
     def execute(self, task_context: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute agent on task."""
+        """Execute agent on task.
+
+        If the LLM client supports streaming (has stream_tokens()) AND
+        the agent has repo_tool, tool calls are executed as they arrive
+        rather than after the full response — cutting perceived latency
+        to near-zero for file operations.
+        """
         task_frame    = task_context.get("task_frame")
         shared_context = task_context.get("shared_context", "")
         other_outputs  = task_context.get("other_agent_outputs", {})
@@ -92,16 +74,76 @@ class BaseAgent(ABC):
         temperature = modified_context.get("temperature", 0.7)
         max_tokens  = modified_context.get("max_tokens", 800)
 
-        response = self.llm_client.generate(
-            prompt, max_tokens=max_tokens, temperature=temperature
-        )
+        # Use streaming execution when available and file tools are present
+        has_file_tools = "repo_tool" in self.tools
+        has_streaming  = hasattr(self.llm_client, "stream_tokens")
 
-        result = self._parse_response(response)
+        if has_file_tools and has_streaming:
+            result = self._execute_streaming(
+                prompt, max_tokens, temperature, workspace_root
+            )
+        else:
+            response = self.llm_client.generate(
+                prompt, max_tokens=max_tokens, temperature=temperature
+            )
+            result = self._parse_response(response)
 
         if skill_packs:
             result["skill_packs_applied"] = [pack.pack_id for pack in skill_packs]
 
         return result
+
+    def _execute_streaming(
+        self,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        workspace_root: str,
+    ) -> Dict[str, Any]:
+        """
+        Stream tokens from the LLM and execute tool calls as each block closes.
+
+        Tokens are collected into full_parts for the final response text while
+        the streaming parser fires file operations the moment each closing
+        </tool_call> tag arrives.
+        """
+        from app.tools.filesystem import FilesystemExecutor, stream_parse_tool_calls
+
+        executor = FilesystemExecutor(workspace_root=workspace_root)
+        full_parts: list[str] = []
+        executed_ops: list = []
+
+        # Tee: collect all tokens AND feed the streaming parser
+        def tee_stream():
+            for tok in self.llm_client.stream_tokens(
+                prompt, max_tokens=max_tokens, temperature=temperature
+            ):
+                full_parts.append(tok)
+                yield tok
+
+        for op in stream_parse_tool_calls(tee_stream()):
+            result = executor.execute(op)
+            executed_ops.append(result)
+            status = "✓" if result.success else "✗"
+            print(f"  {status} {op.tool}: {op.path}")
+
+        full_response = "".join(full_parts)
+
+        # Strip tool_call blocks from display text
+        import re
+        display = re.sub(
+            r'<tool_call>.*?</tool_call>', '', full_response,
+            flags=re.DOTALL | re.IGNORECASE
+        ).strip()
+
+        return {
+            "output": display if display else full_response,
+            "raw_response": full_response,
+            "confidence": 0.7,
+            "tool_calls": [r.op for r in executed_ops],
+            "tool_results": executed_ops,
+            "reasoning": "Streaming execution with inline tool call dispatch",
+        }
 
     # ------------------------------------------------------------------
     # Prompt building

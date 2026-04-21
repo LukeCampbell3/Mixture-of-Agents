@@ -12,7 +12,7 @@ from app.models.uncertainty import UncertaintyEstimator
 from app.agents.code_primary import CodePrimaryAgent
 from app.agents.web_research import WebResearchAgent
 from app.agents.critic_verifier import CriticVerifierAgent
-from app.tools.filesystem import FilesystemExecutor, parse_tool_calls
+from app.tools.filesystem import FilesystemExecutor, parse_tool_calls, FileOperation, OperationResult
 from app.storage.registry_store import RegistryStore
 from app.storage.artifact_store import ArtifactStore
 from app.calibration import ThreeLevelCalibrator
@@ -28,6 +28,37 @@ from app.lifecycle import LifecycleManager
 from app.gap_analyzer import GapAnalyzer
 from app.agent_factory import AgentFactory, DynamicAgent
 from datetime import datetime
+
+
+# ANSI color codes for terminal output
+class Color:
+    """Simple ANSI color codes for terminal output."""
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    DIM = "\033[2m"
+    RESET = "\033[0m"
+    
+    @classmethod
+    def red(cls, text: str) -> str:
+        return f"{cls.RED}{text}{cls.RESET}"
+    
+    @classmethod
+    def green(cls, text: str) -> str:
+        return f"{cls.GREEN}{text}{cls.RESET}"
+    
+    @classmethod
+    def yellow(cls, text: str) -> str:
+        return f"{cls.YELLOW}{text}{cls.RESET}"
+    
+    @classmethod
+    def blue(cls, text: str) -> str:
+        return f"{cls.BLUE}{text}{cls.RESET}"
+    
+    @classmethod
+    def dim(cls, text: str) -> str:
+        return f"{cls.DIM}{text}{cls.RESET}"
 import json
 from pathlib import Path
 
@@ -46,7 +77,8 @@ class Orchestrator:
         use_lead_agent_pattern: bool = True,
         enable_parallel: bool = True,
         max_parallel_agents: int = 3,
-        max_tokens: int = 800
+        max_tokens: int = 800,
+        auto_approve_file_ops: bool = False
     ):
         """Initialize orchestrator.
         
@@ -63,6 +95,7 @@ class Orchestrator:
             enable_parallel:     Enable parallel agent execution (default: True)
             max_parallel_agents: Maximum parallel agents (default: 3)
             max_tokens:          Max tokens per agent call (default: 800)
+            auto_approve_file_ops: Automatically approve file operations without user input (default: False)
         """
         # ── worker model (all agent execution) ──────────────────────────────
         self.llm_client = create_llm_client(llm_provider, llm_model, llm_base_url)
@@ -128,6 +161,9 @@ class Orchestrator:
             self.registry,
             self.embedding_generator
         )
+        
+        # File operation auto-approval
+        self.auto_approve_file_ops = auto_approve_file_ops
     
     def _initialize_calibrator(self, data_dir: str) -> Optional[ThreeLevelCalibrator]:
         """Initialize or load calibrator."""
@@ -157,6 +193,14 @@ class Orchestrator:
         """
         self.workspace_root = workspace_root
         self._conversation_history = conversation_history
+        
+        # Frame the task FIRST to get task context for spawning
+        task_frame = self.router.frame_task(user_request)
+        task_family = self.router._get_task_family(task_frame.task_type)
+        
+        # Store task frame for use in spawning (needed for proper context)
+        self._current_task_frame = task_frame
+
         # Initialize budget controller — honour device profile's agent cap
         budget_controller = BudgetController(
             mode=self.budget_mode,
@@ -164,12 +208,9 @@ class Orchestrator:
         )
         budget_controller.start_execution()
 
-        # Frame the task
-        task_frame = self.router.frame_task(user_request)
-        task_family = self.router._get_task_family(task_frame.task_type)
-
         # ── On-demand spawn: detect gap before routing ────────────────────
-        self._maybe_spawn_specialist(task_frame)
+        # Pass the full task frame with conversation history for proper context
+        self._maybe_spawn_specialist(task_frame, conversation_history)
 
         # Initialize run state
         run_state = RunState(
@@ -218,6 +259,16 @@ class Orchestrator:
         run_state.final_answer = final_answer
         # Collect all tool calls emitted by agents during this run
         run_state.pending_tool_calls = getattr(self, "_pending_tool_calls", [])
+        
+        # Execute file operations (with approval if enabled)
+        pending_ops = getattr(self, "_pending_tool_calls", [])
+        if pending_ops:
+            self._execute_file_operations(
+                pending_ops, 
+                workspace_root,
+                auto_approve=self.auto_approve_file_ops
+            )
+        
         self._pending_tool_calls = []  # reset for next run
         run_state.validation_report = validation_report.model_dump()
         run_state.final_state = validation_report.validation_state if isinstance(validation_report.validation_state, str) else validation_report.validation_state.value
@@ -400,7 +451,7 @@ class Orchestrator:
         run_state.active_agents.append(lead_agent_id)
         
         lead_agent_spec = self.registry.get_agent(lead_agent_id)
-        lead_agent = self._create_agent_instance(lead_agent_spec)
+        lead_agent = self._create_agent_instance(lead_agent_spec, getattr(self, "_conversation_history", ""))
         
         task_context = {
             "task_frame": task_frame,
@@ -424,7 +475,7 @@ class Orchestrator:
             run_state.active_agents.append(agent_id)
             
             agent_spec = self.registry.get_agent(agent_id)
-            agent = self._create_agent_instance(agent_spec)
+            agent = self._create_agent_instance(agent_spec, getattr(self, "_conversation_history", ""))
             
             # Execute with role-specific instructions
             role_context = {
@@ -519,7 +570,7 @@ class Orchestrator:
                 if not agent_spec:
                     continue
                 
-                agent = self._create_agent_instance(agent_spec)
+                agent = self._create_agent_instance(agent_spec, getattr(self, "_conversation_history", ""))
                 
                 # Assign relevant skill packs to agent
                 agent_skill_packs = self._select_skill_packs_for_agent(
@@ -573,7 +624,7 @@ class Orchestrator:
                 if not agent_spec:
                     continue
                 
-                agent = self._create_agent_instance(agent_spec)
+                agent = self._create_agent_instance(agent_spec, getattr(self, "_conversation_history", ""))
                 
                 # Assign relevant skill packs
                 agent_skill_packs = self._select_skill_packs_for_agent(
@@ -644,7 +695,7 @@ class Orchestrator:
                 if not agent_spec:
                     continue
                 
-                agent = self._create_agent_instance(agent_spec)
+                agent = self._create_agent_instance(agent_spec, getattr(self, "_conversation_history", ""))
                 
                 # Refinement context includes arbitration results
                 refinement_context = {
@@ -747,14 +798,101 @@ class Orchestrator:
         return selected
     
     def _collect_tool_calls(self, agent_outputs: dict) -> None:
-        """Accumulate FileOperation objects from all agent outputs."""
+        """Accumulate FileOperation objects from agent outputs that were NOT
+        already executed inline during streaming."""
         if not hasattr(self, "_pending_tool_calls"):
             self._pending_tool_calls = []
         for output in agent_outputs.values():
+            # tool_results present means streaming already executed these ops
+            if output.get("tool_results"):
+                continue
             calls = output.get("tool_calls", [])
             self._pending_tool_calls.extend(calls)
 
-    def _maybe_spawn_specialist(self, task_frame) -> None:
+    def _execute_file_operations(
+        self,
+        pending_ops: List[FileOperation],
+        workspace_root: str,
+        auto_approve: bool = False
+    ) -> List[OperationResult]:
+        """Execute file operations with optional approval flow.
+        
+        Args:
+            pending_ops: List of file operations to execute
+            workspace_root: Root directory for file operations
+            auto_approve: If True, execute without user approval
+            
+        Returns:
+            List of operation results
+        """
+        from app.tools.filesystem import FilesystemExecutor
+        
+        executor = FilesystemExecutor(workspace_root=workspace_root)
+        
+        if not pending_ops:
+            return []
+        
+        print(Color.yellow(f"\n  {len(pending_ops)} file operation(s) proposed:\n"))
+        
+        approved_ops = []
+        for i, op in enumerate(pending_ops, 1):
+            print(Color.blue(f"  [{i}/{len(pending_ops)}] {op.tool.upper()}: {op.path}"))
+            if op.description:
+                print(Color.dim(f"  {op.description}"))
+
+            # Show diff/preview
+            preview = executor.preview(op)
+            if preview and preview != "(no changes)":
+                # Colour the diff lines
+                for line in preview.splitlines():
+                    if line.startswith("+") and not line.startswith("+++"):
+                        print(Color.green(f"  {line}"))
+                    elif line.startswith("-") and not line.startswith("---"):
+                        print(Color.red(f"  {line}"))
+                    else:
+                        print(Color.dim(f"  {line}"))
+            print()
+
+            # Auto-approve or ask for approval
+            if auto_approve:
+                approved_ops.append(op)
+                print(Color.green(f"  [AUTO-APPROVED]"))
+            else:
+                try:
+                    choice = input(
+                        Color.yellow("  Apply? [y]es / [n]o / [a]ll / [q]uit: ")
+                    ).strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    choice = "q"
+
+                if choice in ("a", "all"):
+                    approved_ops.extend(pending_ops[i - 1:])
+                    print(Color.green(f"  Approved all remaining {len(pending_ops)-i+1} operation(s)."))
+                    break
+                elif choice in ("y", "yes", ""):
+                    approved_ops.append(op)
+                elif choice in ("q", "quit"):
+                    print(Color.yellow("  Aborted remaining operations."))
+                    break
+                else:
+                    print(Color.dim("  Skipped."))
+
+        # Execute approved operations
+        if approved_ops:
+            print()
+            # Use batch mode for faster execution when auto-approving
+            results = executor.execute_all(approved_ops, batch_mode=auto_approve)
+            for res in results:
+                if res.success:
+                    print(Color.green(f"  ✓ {res.message}"))
+                else:
+                    print(Color.red(f"  ✗ {res.message}"))
+            print()
+            return results
+        
+        return []
+
+    def _maybe_spawn_specialist(self, task_frame, conversation_history: str = "") -> None:
         """
         Spawn a specialist agent on-demand when the task has clear specialist
         signals but no matching specialist exists yet.
@@ -764,6 +902,8 @@ class Orchestrator:
         2. If no specialist for that domain exists, spawn one immediately.
         3. If a specialist already exists, do nothing (it will be routed to).
         4. If no specialist domain is detected, fall back to base agents.
+        
+        The spawned agent receives the conversation history so it has prior context.
         """
         # Detect the specialist domain from the task text
         domain = self._detect_specialist_domain(task_frame.normalized_request)
@@ -775,12 +915,18 @@ class Orchestrator:
         if self.registry.get_agent(agent_id) is not None:
             return  # Already exists — router will select it
 
+        # Create context-aware task text that includes conversation history
+        full_task_context = task_frame.normalized_request
+        if conversation_history:
+            full_task_context = f"{conversation_history}\n\nCURRENT TASK:\n{task_frame.normalized_request}"
+
         # Spawn a new specialist
         print(f"\n  [spawn] Creating specialist: {domain}")
         spec, _instance = self.agent_factory.spawn_for_task(
-            task_text=task_frame.normalized_request,
+            task_text=full_task_context,
             domain=domain,
             agent_id=agent_id,
+            conversation_history=conversation_history,
         )
 
         # Register immediately so the router sees it on this request
@@ -914,12 +1060,18 @@ class Orchestrator:
         self.registry_store.save_registry(registry)
         return registry
     
-    def _create_agent_instance(self, agent_spec: AgentSpec):
+    def _create_agent_instance(
+        self,
+        agent_spec: AgentSpec,
+        conversation_history: str = "",
+    ):
         """Create agent instance from spec.
 
         The three universal base agents use their hand-written classes.
         Every other agent (spawned specialists) is instantiated via
         AgentFactory, which uses the LLM to generate a focused system prompt.
+        
+        The conversation history is passed so spawned agents have prior context.
         """
         base_agents = {
             "code_primary":   CodePrimaryAgent,
@@ -938,7 +1090,7 @@ class Orchestrator:
             )
 
         # All spawned / dynamic agents go through the factory
-        return self.agent_factory.create_agent_instance(agent_spec)
+        return self.agent_factory.create_agent_instance(agent_spec, conversation_history)
     
     def _collaborative_synthesis(
         self,

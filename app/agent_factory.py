@@ -61,9 +61,13 @@ class AgentFactory:
             expected_activation_rate=spawn_spec.get("expected_activation_rate", 0.1),
         )
 
-    def create_agent_instance(self, agent_spec: AgentSpec) -> DynamicAgent:
+    def create_agent_instance(
+        self,
+        agent_spec: AgentSpec,
+        conversation_history: str = "",
+    ) -> DynamicAgent:
         """Instantiate a DynamicAgent from a spec, generating its system prompt."""
-        system_prompt = self._generate_system_prompt(agent_spec)
+        system_prompt = self._generate_system_prompt(agent_spec, conversation_history)
         return DynamicAgent(
             agent_id=agent_spec.agent_id,
             name=agent_spec.name,
@@ -79,16 +83,23 @@ class AgentFactory:
         task_text: str,
         domain: str,
         agent_id: str,
+        conversation_history: str = "",
     ):
         """
         Immediately create a new specialist agent for a task that has no good match.
 
         Uses the LLM to write a focused system prompt, then returns both the
         AgentSpec (for the registry) and a ready-to-use DynamicAgent instance.
+        
+        The conversation history is included in the system prompt so the agent
+        has prior context from previous interactions.
+        
         Returns: (AgentSpec, DynamicAgent)
         """
-        # Ask the LLM to write the system prompt
-        system_prompt = self._llm_generate_system_prompt(task_text, domain)
+        # Ask the LLM to write the system prompt, including conversation history
+        system_prompt = self._llm_generate_system_prompt(
+            task_text, domain, conversation_history
+        )
 
         name = f"{domain.replace('_', ' ').title()} Specialist"
         description = (
@@ -122,15 +133,34 @@ class AgentFactory:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _llm_generate_system_prompt(self, task_text: str, domain: str) -> str:
+    def _llm_generate_system_prompt(
+        self,
+        task_text: str,
+        domain: str,
+        conversation_history: str = "",
+    ) -> str:
         """
         Ask the LLM to write a tight, code-first system prompt for a new specialist.
         Falls back to a template if the LLM call fails.
+        
+        The conversation history is included so the agent has prior context.
         """
+        # Build the meta prompt with conversation history if available
+        history_context = ""
+        if conversation_history:
+            history_context = f"""
+CONVERSATION HISTORY (prior context for this agent):
+{conversation_history}
+
+IMPORTANT: The agent should be aware of this prior conversation and build upon it.
+"""
+
         meta_prompt = f"""Write a system prompt for a specialist AI agent.
 
 The agent's domain: {domain}
 Example task it will handle: {task_text}
+
+{history_context}
 
 Requirements for the system prompt:
 - Start with "You are a {domain} specialist agent."
@@ -152,22 +182,39 @@ System prompt:"""
         except Exception:
             pass
 
-        # Template fallback
-        return self._template_system_prompt(domain, task_text)
+        # Template fallback (pass conversation history for context)
+        return self._template_system_prompt(domain, task_text, conversation_history)
 
-    def _template_system_prompt(self, domain: str, task_text: str) -> str:
+    def _template_system_prompt(
+        self,
+        domain: str,
+        task_text: str,
+        conversation_history: str = "",
+    ) -> str:
         """Deterministic fallback system prompt."""
         domain_display = domain.replace("_", " ")
+        
+        history_context = ""
+        if conversation_history:
+            history_context = f"""
+
+CONVERSATION HISTORY:
+{conversation_history}
+
+IMPORTANT: You are a new specialist agent joining an ongoing conversation. 
+Review the prior context and build upon it as needed."""
+        
         return f"""You are a {domain_display} specialist agent.
 
 RULES:
 - ALWAYS write complete, working code — never just describe what code should do.
 - Use markdown code blocks with the correct language tag.
 - After the code, add a brief explanation (2-5 sentences).
+- Review any conversation history provided and build upon prior work when relevant.
 
 Expertise: {domain_display} tasks including implementation, debugging, and best practices.
 
-Example task: {task_text[:100]}
+Example task: {task_text[:100]}{history_context}
 
 Output format:
 ```<language>
@@ -177,11 +224,16 @@ Output format:
 **How it works:** brief explanation.
 """
 
-    def _generate_system_prompt(self, agent_spec: AgentSpec) -> str:
+    def _generate_system_prompt(
+        self,
+        agent_spec: AgentSpec,
+        conversation_history: str = "",
+    ) -> str:
         """Generate system prompt for an agent spec (used by create_agent_instance)."""
         return self._llm_generate_system_prompt(
             agent_spec.target_cluster or agent_spec.description,
             agent_spec.domain,
+            conversation_history,
         )
 
     def _infer_tools(self, domain: str) -> list:

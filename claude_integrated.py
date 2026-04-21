@@ -422,6 +422,8 @@ DEFAULT_CONFIG = {
             "budget_mode": "balanced",
             "enable_parallel": True,
             "max_parallel_agents": 3,
+            "max_tokens": 800,
+            "auto_approve_file_ops": False,
             "debug": False
         }
     },
@@ -676,6 +678,9 @@ class AgenticNetworkClient:
             max_agents = int(max_agents)
             max_tokens = int(max_tokens)
 
+            # Auto-approve file operations if enabled in config
+            auto_approve = active_config.get("auto_approve_file_ops", False)
+            
             self.orchestrator = Orchestrator(
                 llm_provider=provider,
                 llm_model=self.worker_model,
@@ -685,6 +690,7 @@ class AgenticNetworkClient:
                 enable_parallel=enable_parallel,
                 max_parallel_agents=max_agents,
                 max_tokens=max_tokens,
+                auto_approve_file_ops=auto_approve,
             )
 
             print(Color.green("✅ Agentic Network initialized"))
@@ -1099,7 +1105,8 @@ def main():
                     print(Color.green(f"Configuration updated: {key} = {value}"))
                     # Reload orchestrator if any runtime setting changed
                     if key in ["llm_provider", "llm_model", "llm_base_url", "budget_mode",
-                               "enable_parallel", "max_parallel_agents", "max_tokens"]:
+                               "enable_parallel", "max_parallel_agents", "max_tokens",
+                               "auto_approve_file_ops"]:
                         print(Color.yellow("Reloading Agentic Network..."))
                         agentic_client.initialize_orchestrator()
                 else:
@@ -1284,7 +1291,8 @@ def main():
             # Execute approved operations
             if approved_ops:
                 print()
-                results = executor.execute_all(approved_ops)
+                # Use batch mode for faster execution when auto-approving
+                results = executor.execute_all(approved_ops, batch_mode=auto_approve)
                 for res in results:
                     if res.success:
                         print(Color.green(f"  ✓ {res.message}"))

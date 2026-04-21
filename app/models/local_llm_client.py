@@ -98,6 +98,29 @@ class OllamaClient(LLMClient):
 
         return "".join(parts)
 
+    def stream_tokens(
+        self,
+        prompt: str,
+        max_tokens: int = 1000,
+        temperature: float = 0.7,
+    ) -> Iterator[str]:
+        """
+        Yield individual text tokens as they arrive from Ollama.
+
+        Use this for streaming execution — callers can parse and act on
+        tool calls as soon as each block closes, without waiting for the
+        full response.
+        """
+        try:
+            for chunk in self._stream_chunks(prompt, max_tokens, temperature):
+                token = chunk.get("response", "")
+                if token:
+                    yield token
+                if chunk.get("done"):
+                    break
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Ollama API error: {e}")
+
     def generate_structured(self, prompt: str, schema: Dict[str, Any]) -> Dict[str, Any]:
         """Generate structured output matching schema."""
         schema_str = json.dumps(schema, indent=2)
