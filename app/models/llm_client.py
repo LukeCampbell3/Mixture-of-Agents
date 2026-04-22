@@ -155,6 +155,26 @@ def create_llm_client(provider: str = "openai", model: Optional[str] = None, bas
     elif provider == "local":
         from app.models.local_llm_client import LocalLLMClient
         return LocalLLMClient(model=model or "qwen2.5", base_url=base_url or "http://localhost:8000")
+    elif provider == "openmythos":
+        from app.models.openmythos_client import OpenMythosClient, OpenMythosConfig
+        from app.models.openmythos_client import ARTIFACTS_GPU, ARTIFACTS_POC
+        from pathlib import Path as _Path
+        # model string: "gpu", "poc", "gpu@4loops", "poc@2loops"
+        artifact = "gpu"
+        n_loops = 2
+        if model:
+            parts = model.split("@")
+            artifact = parts[0] if parts[0] in ("gpu", "poc") else "gpu"
+            if len(parts) > 1 and "loops" in parts[1]:
+                n_loops = int(parts[1].replace("loops", ""))
+        artifact_dir = ARTIFACTS_GPU if artifact == "gpu" else ARTIFACTS_POC
+        cfg = OpenMythosConfig(
+            artifact_dir=artifact_dir,
+            n_loops=n_loops,
+            device="cuda" if _has_cuda() else "cpu",
+            model_name=f"openmythos-distill-{artifact}",
+        )
+        return OpenMythosClient(cfg)
     elif provider == "mock":
         return MockLLMClient(model=model or "mock-model")
     else:
