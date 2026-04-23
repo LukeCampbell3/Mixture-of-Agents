@@ -152,6 +152,9 @@ def create_llm_client(provider: str = "openai", model: Optional[str] = None, bas
     elif provider == "ollama":
         from app.models.local_llm_client import OllamaClient
         return OllamaClient(model=model or "qwen2.5:latest", base_url=base_url or "http://localhost:11434")
+    elif provider == "ollama_chat":
+        from app.models.local_llm_client import ChatOllamaClient
+        return ChatOllamaClient(model=model or "qwen2.5:latest", base_url=base_url or "http://localhost:11434")
     elif provider == "local":
         from app.models.local_llm_client import LocalLLMClient
         return LocalLLMClient(model=model or "qwen2.5", base_url=base_url or "http://localhost:8000")

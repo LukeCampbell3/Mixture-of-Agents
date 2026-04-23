@@ -31,16 +31,20 @@ import app.device_profile as device_profile
 import app.models.llm_client as llm_client_module
 import app.orchestrator as orchestrator_module
 from app.models.llm_client import LLMClient
-from app.models.local_llm_client import OllamaClient
+from app.models.local_llm_client import OllamaClient, ChatOllamaClient, SessionMetrics
 
 
 ROOT = Path(__file__).resolve().parent
 DEFAULT_CHECKPOINT = ROOT / "artifacts" / "openmythos-scaled-ce-export" / "checkpoint.pt"
 DEFAULT_IMAGE = "openmythos-distill:local"
 DEFAULT_MODEL_NAME = "openmythos-scaled-medium"
+DEFAULT_ROUTER_MODEL = "qwen2.5:0.5b"
 DEFAULT_FALLBACK_MODEL = "qwen2.5-coder:1.5b"
 DEFAULT_FALLBACK_URL = "http://localhost:11434"
 DEFAULT_MAX_TOKENS = 4000
+DEFAULT_KEEP_ALIVE_ROUTER = -1          # pin router forever (tiny model)
+DEFAULT_KEEP_ALIVE_WORKER = "15m"       # keep worker warm for 15 min
+DEFAULT_KEEP_ALIVE_FALLBACK = "10m"     # keep fallback warm for 10 min
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -326,6 +330,9 @@ class QualityGuardedOpenMythosClient(LLMClient):
     it can emit byte-fragmented text. This guard preserves the claude_integrated
     response experience while still exercising OpenMythos whenever it produces
     coherent output.
+
+    Now tracks per-session metrics via :class:`SessionMetrics` so you can
+    compare strict vs guarded OpenMythos across a whole run.
     """
 
     def __init__(
@@ -336,15 +343,42 @@ class QualityGuardedOpenMythosClient(LLMClient):
         fallback_base_url: str,
         strict_openmythos: bool = False,
         show_fallback: bool = False,
+        transport: str = "generate",
+        keep_alive_worker: str | int | None = DEFAULT_KEEP_ALIVE_WORKER,
+        keep_alive_fallback: str | int | None = DEFAULT_KEEP_ALIVE_FALLBACK,
+        session_metrics: SessionMetrics | None = None,
     ):
         self.model = model
-        self.primary = OllamaClient(model=model, base_url=openmythos_base_url)
-        self.fallback = OllamaClient(model=fallback_model, base_url=fallback_base_url)
         self.fallback_model = fallback_model
         self.strict_openmythos = strict_openmythos
         self.show_fallback = show_fallback
         self._last_metrics: dict[str, Any] = {}
         self._warned_fallback = False
+        self.session_metrics = session_metrics or SessionMetrics()
+
+        # Build primary and fallback clients based on transport choice
+        if transport == "chat":
+            self.primary: LLMClient = ChatOllamaClient(
+                model=model,
+                base_url=openmythos_base_url,
+                keep_alive=keep_alive_worker,
+            )
+            self.fallback: LLMClient = ChatOllamaClient(
+                model=fallback_model,
+                base_url=fallback_base_url,
+                keep_alive=keep_alive_fallback,
+            )
+        else:
+            self.primary = OllamaClient(
+                model=model,
+                base_url=openmythos_base_url,
+                keep_alive=keep_alive_worker,
+            )
+            self.fallback = OllamaClient(
+                model=fallback_model,
+                base_url=fallback_base_url,
+                keep_alive=keep_alive_fallback,
+            )
 
     def generate(
         self,
@@ -372,6 +406,7 @@ class QualityGuardedOpenMythosClient(LLMClient):
                 "source": "openmythos",
                 **getattr(self.primary, "last_metrics", lambda: {})(),
             }
+            self.session_metrics.record(self._last_metrics)
             if print_stream:
                 print(primary_text)
             return primary_text
@@ -382,6 +417,7 @@ class QualityGuardedOpenMythosClient(LLMClient):
                 "fallback_used": False,
                 **self.primary.last_metrics(),
             }
+            self.session_metrics.record(self._last_metrics)
             if print_stream:
                 print(primary_text)
             return primary_text
@@ -412,15 +448,17 @@ class QualityGuardedOpenMythosClient(LLMClient):
             "openmythos_preview": primary_text[:160],
             **self.fallback.last_metrics(),
         }
+        self.session_metrics.record(self._last_metrics)
         return fallback_text
 
     def generate_structured(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
-        schema_str = json.dumps(schema, indent=2)
-        full_prompt = (
-            f"{prompt}\n\nRespond with valid JSON matching this schema:\n{schema_str}\n\nJSON:"
-        )
-        response = self.generate(full_prompt, max_tokens=1200, temperature=0.2)
-        return self._extract_json(response)
+        """Structured output — delegates to the underlying client's native path."""
+        try:
+            return self.primary.generate_structured(prompt, schema)
+        except Exception:
+            if self.strict_openmythos:
+                raise
+            return self.fallback.generate_structured(prompt, schema)
 
     def get_model_name(self) -> str:
         if self.strict_openmythos:
@@ -429,23 +467,6 @@ class QualityGuardedOpenMythosClient(LLMClient):
 
     def last_metrics(self) -> dict[str, Any]:
         return self._last_metrics
-
-    @staticmethod
-    def _extract_json(text: str) -> dict[str, Any]:
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
-        if "```json" in text:
-            text = text.split("```json", 1)[1].split("```", 1)[0].strip()
-        elif "```" in text:
-            text = text.split("```", 1)[1].split("```", 1)[0].strip()
-        else:
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start >= 0 and end > start:
-                text = text[start:end]
-        return json.loads(text)
 
     @staticmethod
     def _is_fragmented(text: str, max_tokens: int) -> bool:
@@ -548,6 +569,44 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fallback-model", default=DEFAULT_FALLBACK_MODEL)
     parser.add_argument("--fallback-base-url", default=DEFAULT_FALLBACK_URL)
     parser.add_argument(
+        "--router-model",
+        default=DEFAULT_ROUTER_MODEL,
+        help=(
+            "Lightweight model for routing/classification only. "
+            "Defaults to qwen2.5:0.5b. Set to the same value as "
+            "--model-name to reuse the worker for routing."
+        ),
+    )
+    parser.add_argument(
+        "--transport",
+        choices=["generate", "chat"],
+        default="generate",
+        help=(
+            "Ollama transport: 'generate' uses /api/generate (prompt-based), "
+            "'chat' uses /api/chat (role-aware, supports tool calling)."
+        ),
+    )
+    parser.add_argument(
+        "--keep-alive-router",
+        default=str(DEFAULT_KEEP_ALIVE_ROUTER),
+        help="Ollama keep_alive for the router model. -1 = forever. Default: %(default)s",
+    )
+    parser.add_argument(
+        "--keep-alive-worker",
+        default=DEFAULT_KEEP_ALIVE_WORKER,
+        help="Ollama keep_alive for the worker model. Default: %(default)s",
+    )
+    parser.add_argument(
+        "--keep-alive-fallback",
+        default=DEFAULT_KEEP_ALIVE_FALLBACK,
+        help="Ollama keep_alive for the fallback model. Default: %(default)s",
+    )
+    parser.add_argument(
+        "--no-warmup",
+        action="store_true",
+        help="Skip model warmup on startup (faster launch, slower first request).",
+    )
+    parser.add_argument(
         "--strict-openmythos",
         action="store_true",
         help="Disable fallback and show raw OpenMythos output even if fragmented.",
@@ -586,17 +645,29 @@ def main() -> int:
     if args.raw_openmythos:
         args.strict_openmythos = True
 
-    patch_claude_integrated(args, manager)
+    # Shared session metrics — survives the whole process
+    session_metrics = SessionMetrics()
+
+    def _dump_session_metrics():
+        summary = session_metrics.summary()
+        if summary["total_requests"] > 0:
+            print(ci.Color.dim(f"\n  [session] {json.dumps(summary, sort_keys=True)}"))
+
+    atexit.register(_dump_session_metrics)
+
+    patch_claude_integrated(args, manager, session_metrics)
 
     if args.smoke:
         manager.start_ollama_server()
-        client = build_runtime_client(args, manager)
+        client = build_runtime_client(args, manager, session_metrics)
+        _warmup_models(args, manager)
         print(client.generate(args.smoke, max_tokens=args.max_tokens, temperature=0.0))
         print(ci.Color.dim(f"metrics: {json.dumps(client.last_metrics(), sort_keys=True)}"))
         return 0
 
     if args.prompt:
         manager.start_ollama_server()
+        _warmup_models(args, manager)
         profile = build_openmythos_profile(args)
         client = ci.AgenticNetworkClient(manager, profile)
         answer, pending = client.process_request(args.prompt, workspace_root=str(ROOT))
@@ -607,6 +678,8 @@ def main() -> int:
 
     print(ci.Color.blue("OpenMythos Test Launcher"))
     print(ci.Color.dim(f"  Model      : {args.model_name}"))
+    print(ci.Color.dim(f"  Router     : {args.router_model}"))
+    print(ci.Color.dim(f"  Transport  : {args.transport}"))
     print(ci.Color.dim(f"  Checkpoint : {args.checkpoint}"))
     print(ci.Color.dim(f"  Endpoint   : http://{args.host}:{args.port}"))
     if args.strict_openmythos:
@@ -615,19 +688,29 @@ def main() -> int:
         print(ci.Color.dim(
             f"  Quality guard: ON, fallback={args.fallback_model} at {args.fallback_base_url}"
         ))
+
+    # Warmup models before entering the interactive loop
+    _warmup_models(args, manager)
+
     print(ci.Color.dim("  Entering claude_integrated.py with OpenMythos guarded inference."))
     ci.main()
     return 0
 
 
-def patch_claude_integrated(args: argparse.Namespace, manager: OpenMythosManager) -> None:
+def patch_claude_integrated(
+    args: argparse.Namespace,
+    manager: OpenMythosManager,
+    session_metrics: SessionMetrics | None = None,
+) -> None:
     profile = build_openmythos_profile(args)
 
     def load_or_create_openmythos(force: bool = False) -> dict[str, Any]:
         return profile
 
     def print_openmythos_summary(profile_payload: dict[str, Any]) -> None:
-        print(f"  Runtime model: {profile_payload['models']['worker']}")
+        print(f"  Runtime worker : {profile_payload['models']['worker']}")
+        print(f"  Runtime router : {profile_payload['models']['router']}")
+        print(f"  Transport      : {args.transport}")
         print(f"  Endpoint: http://{args.host}:{args.port}")
         print(f"  Recurrent loops: {args.loops}")
         print(f"  Checkpoint: {args.checkpoint}")
@@ -640,7 +723,7 @@ def patch_claude_integrated(args: argparse.Namespace, manager: OpenMythosManager
             self.__dict__.update(manager.__dict__)
 
     ci.OllamaManager = PatchedOpenMythosManager
-    patch_llm_factory(args, manager)
+    patch_llm_factory(args, manager, session_metrics)
 
     active = ci.get_active_config()
     active["llm_provider"] = "ollama"
@@ -649,9 +732,15 @@ def patch_claude_integrated(args: argparse.Namespace, manager: OpenMythosManager
     active["openmythos_auto_adapt"] = True
     active["max_tokens"] = args.max_tokens
     active["auto_approve_file_ops"] = True
+    # Expose router model so the orchestrator can use a separate lightweight model
+    active["router_model"] = args.router_model
 
 
-def patch_llm_factory(args: argparse.Namespace, manager: OpenMythosManager) -> None:
+def patch_llm_factory(
+    args: argparse.Namespace,
+    manager: OpenMythosManager,
+    session_metrics: SessionMetrics | None = None,
+) -> None:
     original_factory = llm_client_module.create_llm_client
     openmythos_base_url = f"http://{args.host}:{args.port}"
 
@@ -661,7 +750,7 @@ def patch_llm_factory(args: argparse.Namespace, manager: OpenMythosManager) -> N
         base_url: str | None = None,
     ) -> LLMClient:
         if provider == "ollama" and (model == args.model_name or base_url == openmythos_base_url):
-            return build_runtime_client(args, manager)
+            return build_runtime_client(args, manager, session_metrics)
         return original_factory(provider, model, base_url)
 
     llm_client_module.create_llm_client = create_openmythos_client
@@ -669,7 +758,10 @@ def patch_llm_factory(args: argparse.Namespace, manager: OpenMythosManager) -> N
     ci.create_llm_client = create_openmythos_client
 
 
-def build_guarded_client(args: argparse.Namespace) -> QualityGuardedOpenMythosClient:
+def build_guarded_client(
+    args: argparse.Namespace,
+    session_metrics: SessionMetrics | None = None,
+) -> QualityGuardedOpenMythosClient:
     return QualityGuardedOpenMythosClient(
         model=args.model_name,
         openmythos_base_url=f"http://{args.host}:{args.port}",
@@ -677,13 +769,25 @@ def build_guarded_client(args: argparse.Namespace) -> QualityGuardedOpenMythosCl
         fallback_base_url=args.fallback_base_url,
         strict_openmythos=args.strict_openmythos,
         show_fallback=args.show_fallback,
+        transport=args.transport,
+        keep_alive_worker=_parse_keep_alive(args.keep_alive_worker),
+        keep_alive_fallback=_parse_keep_alive(args.keep_alive_fallback),
+        session_metrics=session_metrics,
     )
 
 
-def build_runtime_client(args: argparse.Namespace, manager: OpenMythosManager) -> LLMClient:
+def build_runtime_client(
+    args: argparse.Namespace,
+    manager: OpenMythosManager,
+    session_metrics: SessionMetrics | None = None,
+) -> LLMClient:
     if manager.using_fallback:
-        return OllamaClient(model=manager.active_model, base_url=manager.active_base_url)
-    return build_guarded_client(args)
+        return OllamaClient(
+            model=manager.active_model,
+            base_url=manager.active_base_url,
+            keep_alive=_parse_keep_alive(args.keep_alive_fallback),
+        )
+    return build_guarded_client(args, session_metrics)
 
 
 def build_openmythos_profile(args: argparse.Namespace) -> dict[str, Any]:
@@ -696,8 +800,8 @@ def build_openmythos_profile(args: argparse.Namespace) -> dict[str, Any]:
         },
         "models": {
             "worker": args.model_name,
-            "router": args.model_name,
-            "available": [args.model_name],
+            "router": args.router_model,
+            "available": [args.model_name, args.router_model, args.fallback_model],
         },
         "runtime": {
             "enable_parallel": True,
@@ -720,6 +824,63 @@ def build_openmythos_profile(args: argparse.Namespace) -> dict[str, Any]:
         "throughput": {},
         "profile_version": "openmythos-test",
     }
+
+
+def _parse_keep_alive(value: str | int | None) -> str | int | None:
+    """Convert CLI keep_alive string to the right type for Ollama."""
+    if value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except ValueError:
+        return value  # e.g. "15m", "1h"
+
+
+def _warmup_models(args: argparse.Namespace, manager: OpenMythosManager) -> None:
+    """Preload router, worker, and fallback models into VRAM/RAM.
+
+    Skipped when --no-warmup is set.  Each model gets a tiny request
+    with the configured keep_alive so Ollama pins it in memory.
+    """
+    if args.no_warmup:
+        return
+
+    models_to_warm: list[tuple[str, str, str | int | None]] = []
+
+    # Router (at Ollama, not at the OpenMythos server)
+    if args.router_model and args.router_model != args.model_name:
+        models_to_warm.append((
+            args.router_model,
+            args.fallback_base_url,  # router runs on the main Ollama instance
+            _parse_keep_alive(args.keep_alive_router),
+        ))
+
+    # Primary worker (at the OpenMythos server, or Ollama if fallback)
+    if not manager.using_fallback:
+        models_to_warm.append((
+            args.model_name,
+            f"http://{args.host}:{args.port}",
+            _parse_keep_alive(args.keep_alive_worker),
+        ))
+
+    # Fallback worker
+    models_to_warm.append((
+        args.fallback_model,
+        args.fallback_base_url,
+        _parse_keep_alive(args.keep_alive_fallback),
+    ))
+
+    for model, base_url, keep_alive in models_to_warm:
+        label = model.split(":")[0] if ":" in model else model
+        print(ci.Color.dim(f"  [warmup] {label} at {base_url} ..."), end=" ", flush=True)
+        client = OllamaClient(model=model, base_url=base_url, keep_alive=keep_alive)
+        ok = client.warmup(timeout=60)
+        if ok:
+            print(ci.Color.green("ready"))
+        else:
+            print(ci.Color.yellow("skipped (not reachable)"))
 
 
 if __name__ == "__main__":
