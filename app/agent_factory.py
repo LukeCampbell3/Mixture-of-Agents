@@ -1,9 +1,10 @@
 """Agent factory for creating new agents dynamically."""
 
 from typing import Dict, Any, Optional
-from app.schemas.registry import AgentSpec, LifecycleState
+
 from app.agents.base_agent import BaseAgent
 from app.models.llm_client import LLMClient
+from app.schemas.registry import AgentSpec, LifecycleState
 
 
 class DynamicAgent(BaseAgent):
@@ -26,12 +27,14 @@ class DynamicAgent(BaseAgent):
     def get_system_prompt(self) -> str:
         if self.custom_system_prompt:
             return self.custom_system_prompt
-        # Fallback — should rarely be hit because factory always generates one
+        # Fallback: should rarely be hit because factory usually generates one.
         return (
             f"You are a specialized {self.domain} agent.\n"
             f"Role: {self.description}\n\n"
             "RULES:\n"
             "- Always write complete, working code when asked to implement something.\n"
+            "- Use file operations only for explicit file or repo-change requests.\n"
+            "- For explanatory questions, answer with markdown code and explanation only.\n"
             "- Use markdown code blocks with the correct language tag.\n"
             "- Be specific and actionable.\n"
         )
@@ -90,13 +93,12 @@ class AgentFactory:
 
         Uses the LLM to write a focused system prompt, then returns both the
         AgentSpec (for the registry) and a ready-to-use DynamicAgent instance.
-        
+
         The conversation history is included in the system prompt so the agent
         has prior context from previous interactions.
-        
+
         Returns: (AgentSpec, DynamicAgent)
         """
-        # Ask the LLM to write the system prompt, including conversation history
         system_prompt = self._llm_generate_system_prompt(
             task_text, domain, conversation_history
         )
@@ -142,10 +144,9 @@ class AgentFactory:
         """
         Ask the LLM to write a tight, code-first system prompt for a new specialist.
         Falls back to a template if the LLM call fails.
-        
+
         The conversation history is included so the agent has prior context.
         """
-        # Build the meta prompt with conversation history if available
         history_context = ""
         if conversation_history:
             history_context = f"""
@@ -166,11 +167,13 @@ Requirements for the system prompt:
 - Start with "You are a {domain} specialist agent."
 - Include a RULES section with these exact rules:
   1. Always write complete working code
-  2. Always save code to files using write_file tool calls — emit the tool call BEFORE the markdown block
-  3. Use a descriptive snake_case filename
+  2. Use write_file tool calls only when the user explicitly wants files or durable code changes
+  3. For conceptual questions, explain with markdown code and do not emit tool calls
+  4. Use a descriptive snake_case filename when writing files
+  5. Prefer adding or updating tests when implementation changes need validation
 - List 4-6 specific areas of expertise relevant to {domain}
-- Keep it under 200 words
-- Do NOT include meta-commentary — write the prompt itself, nothing else
+- Keep it under 220 words
+- Do NOT include meta-commentary; write the prompt itself, nothing else
 
 System prompt:"""
 
@@ -178,13 +181,11 @@ System prompt:"""
             prompt = self.llm_client.generate(
                 meta_prompt, max_tokens=300, temperature=0.4
             )
-            # Sanity check — must mention the domain
             if domain.split("_")[0].lower() in prompt.lower() or len(prompt) > 100:
                 return prompt.strip()
         except Exception:
             pass
 
-        # Template fallback (pass conversation history for context)
         return self._template_system_prompt(domain, task_text, conversation_history)
 
     def _template_system_prompt(
@@ -195,7 +196,7 @@ System prompt:"""
     ) -> str:
         """Deterministic fallback system prompt."""
         domain_display = domain.replace("_", " ")
-        
+
         history_context = ""
         if conversation_history:
             history_context = f"""
@@ -203,16 +204,18 @@ System prompt:"""
 CONVERSATION HISTORY:
 {conversation_history}
 
-IMPORTANT: You are a new specialist agent joining an ongoing conversation. 
+IMPORTANT: You are a new specialist agent joining an ongoing conversation.
 Review the prior context and build upon it as needed."""
-        
+
         return f"""You are a {domain_display} specialist agent.
 
 RULES:
-- ALWAYS write complete, working code — never just describe what code should do.
-- ALWAYS save code to files using write_file tool calls — emit the tool call BEFORE the markdown block.
-- Choose a descriptive snake_case filename (e.g. graph_search.py, neural_net.py).
-- Use markdown code blocks with the correct language tag after the tool call.
+- ALWAYS write complete, working code; never just describe what code should do.
+- Use write_file tool calls ONLY when the user explicitly asks for files or durable repo changes.
+- For conceptual questions, answer with markdown code and explanation only; do not emit tool calls.
+- When writing files, choose a descriptive snake_case filename (e.g. graph_search.py, neural_net.py).
+- Use markdown code blocks with the correct language tag after any tool call.
+- Prefer adding or updating tests when implementation changes need validation.
 - After the code, add a brief explanation (2-5 sentences).
 - Review any conversation history provided and build upon prior work when relevant.
 
@@ -220,7 +223,7 @@ Expertise: {domain_display} tasks including implementation, debugging, and best 
 
 Example task: {task_text[:100]}{history_context}
 
-Output format:
+Output format when a file is requested:
 <tool_call>{{"tool": "write_file", "path": "solution.py", "content": "# complete code here"}}</tool_call>
 
 ```<language>
@@ -245,17 +248,17 @@ Output format:
     def _infer_tools(self, domain: str) -> list:
         """Infer sensible default tools for a domain."""
         tool_map = {
-            "coding":         ["repo_tool", "test_runner"],
-            "research":       ["web_tool", "citation_checker"],
-            "verification":   ["test_runner", "citation_checker"],
-            "security":       ["repo_tool", "web_tool"],
-            "data":           ["repo_tool", "data_tool"],
-            "database":       ["repo_tool", "data_tool"],
-            "devops":         ["repo_tool", "shell_tool"],
-            "api":            ["repo_tool", "web_tool"],
-            "testing":        ["repo_tool", "test_runner"],
-            "documentation":  ["repo_tool"],
-            "refactoring":    ["repo_tool"],
+            "coding": ["repo_tool", "test_runner"],
+            "research": ["web_tool", "citation_checker"],
+            "verification": ["test_runner", "citation_checker"],
+            "security": ["repo_tool", "web_tool"],
+            "data": ["repo_tool", "data_tool"],
+            "database": ["repo_tool", "data_tool"],
+            "devops": ["repo_tool", "shell_tool"],
+            "api": ["repo_tool", "web_tool"],
+            "testing": ["repo_tool", "test_runner"],
+            "documentation": ["repo_tool"],
+            "refactoring": ["repo_tool"],
         }
         return tool_map.get(domain, ["repo_tool", "web_tool"])
 

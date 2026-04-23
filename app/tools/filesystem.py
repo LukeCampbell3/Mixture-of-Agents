@@ -163,15 +163,32 @@ class FilesystemExecutor:
     """Execute file operations safely within a workspace root."""
 
     def __init__(self, workspace_root: str = "."):
-        self.workspace_root = os.path.abspath(workspace_root)
+        self.workspace_root = str(Path(workspace_root).resolve())
 
     def resolve(self, path: str) -> str:
         """Resolve a relative path to an absolute path inside the workspace."""
-        full = os.path.abspath(os.path.join(self.workspace_root, path))
-        # Safety: must stay inside workspace
-        if not full.startswith(self.workspace_root):
+        raw_path = (path or "").strip()
+        if not raw_path:
+            raise ValueError("Path is required")
+
+        candidate = Path(raw_path)
+        if candidate.is_absolute():
+            raise ValueError(f"Absolute paths are not allowed: {path!r}")
+
+        root = Path(self.workspace_root).resolve()
+        full = (root / candidate).resolve(strict=False)
+
+        try:
+            common = os.path.commonpath([
+                os.path.normcase(str(root)),
+                os.path.normcase(str(full)),
+            ])
+        except ValueError as exc:
+            raise ValueError(f"Path escapes workspace: {path!r}") from exc
+
+        if common != os.path.normcase(str(root)):
             raise ValueError(f"Path escapes workspace: {path!r}")
-        return full
+        return str(full)
 
     def preview(self, op: FileOperation) -> str:
         """Return a human-readable diff/preview of what the operation will do."""
@@ -186,7 +203,8 @@ class FilesystemExecutor:
                 file_size = os.path.getsize(full)
                 if file_size > 100 * 1024:
                     return f"[WRITE] {op.path} ({file_size // 1024} KB - skipping large file preview)"
-                old = open(full, encoding="utf-8", errors="replace").read()
+                with open(full, encoding="utf-8", errors="replace") as handle:
+                    old = handle.read()
                 return _unified_diff(old, op.content, op.path)
             else:
                 lines = op.content.splitlines(keepends=True)
@@ -203,7 +221,8 @@ class FilesystemExecutor:
             file_size = os.path.getsize(full)
             if file_size > 100 * 1024:
                 return f"[EDIT] {op.path} ({file_size // 1024} KB - skipping large file preview)"
-            old = open(full, encoding="utf-8", errors="replace").read()
+            with open(full, encoding="utf-8", errors="replace") as handle:
+                old = handle.read()
             if op.old_str not in old:
                 return f"[ERROR] old_str not found in {op.path}"
             new_content = old.replace(op.old_str, op.new_str, 1)
@@ -280,13 +299,19 @@ class FilesystemExecutor:
             f.write(op.content)
 
     def _edit_fast(self, op: FileOperation, full: str) -> None:
+        if not os.path.exists(full):
+            raise FileNotFoundError(f"File not found: {op.path}")
         with open(full, "r", encoding="utf-8") as f:
             old = f.read()
+        if op.old_str not in old:
+            raise ValueError(f"old_str not found in {op.path}")
         new_content = old.replace(op.old_str, op.new_str, 1)
         with open(full, "w", encoding="utf-8") as f:
             f.write(new_content)
 
     def _delete_fast(self, op: FileOperation, full: str) -> None:
+        if not os.path.exists(full):
+            raise FileNotFoundError(f"File not found: {op.path}")
         os.remove(full)
 
     def _mkdir_fast(self, op: FileOperation, full: str) -> None:
@@ -302,7 +327,8 @@ class FilesystemExecutor:
         if os.path.exists(full):
             file_size = os.path.getsize(full)
             if file_size <= 100 * 1024:
-                old = open(full, encoding="utf-8", errors="replace").read()
+                with open(full, encoding="utf-8", errors="replace") as handle:
+                    old = handle.read()
         os.makedirs(os.path.dirname(full) or ".", exist_ok=True)
         with open(full, "w", encoding="utf-8") as f:
             f.write(op.content)
@@ -320,7 +346,8 @@ class FilesystemExecutor:
         file_size = os.path.getsize(full)
         if file_size > 100 * 1024:
             return OperationResult(op, False, f"File too large for edit: {op.path} ({file_size // 1024} KB)")
-        old = open(full, encoding="utf-8", errors="replace").read()
+        with open(full, encoding="utf-8", errors="replace") as handle:
+            old = handle.read()
         if op.old_str not in old:
             return OperationResult(op, False,
                 f"old_str not found in {op.path}. No changes made.")
@@ -347,7 +374,8 @@ class FilesystemExecutor:
         if file_size > 100 * 1024:
             return OperationResult(op, True, f"Read: {op.path} ({file_size // 1024} KB - large file, content truncated)",
                                    diff=f"[File too large to display: {file_size // 1024} KB]")
-        content = open(full, encoding="utf-8", errors="replace").read()
+        with open(full, encoding="utf-8", errors="replace") as handle:
+            content = handle.read()
         return OperationResult(op, True, f"Read: {op.path}",
                                diff=content[:2000])
 

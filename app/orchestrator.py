@@ -6,6 +6,7 @@ from app.budget_controller import BudgetController
 from app.validator import Validator
 from app.schemas.registry import AgentRegistry, AgentSpec, LifecycleState
 from app.schemas.run_state import RunState, ToolCall
+from app.schemas.validation import ValidationCheck, ValidationState
 from app.models.llm_client import LLMClient, create_llm_client
 from app.models.embeddings import EmbeddingGenerator
 from app.models.uncertainty import UncertaintyEstimator
@@ -241,7 +242,8 @@ class Orchestrator:
             agent_outputs,
             final_answer
         )
-        
+        self._merge_build_validation(validation_report, run_state)
+
         # Update run state
         run_state.final_answer = final_answer
 
@@ -481,7 +483,7 @@ class Orchestrator:
                 run_entry_points=True,
                 run_tests=True,
                 test_scope="workspace" if self.budget_mode == "codebase" else "written",
-                auto_generate_tests=(self.budget_mode == "codebase"),
+                auto_generate_tests=True,
                 verbose=True,
             )
             builder = CodebaseBuilder(
@@ -494,10 +496,17 @@ class Orchestrator:
                 task_text=task_frame.normalized_request,
                 initial_response=primary_output.get("raw_response", primary_text),
                 existing_tool_calls=written_ops,
+                existing_tool_results=primary_output.get("tool_results", []),
             )
+            run_state.build_report = self._build_report_payload(session)
             if self.budget_mode == "codebase":
                 primary_text = primary_text + "\n\n" + session.summary()
+            else:
+                verification_note = self._format_build_verification(session)
+                if verification_note:
+                    primary_text = primary_text.rstrip() + "\n\n" + verification_note
             run_state.final_files = session.final_files if hasattr(run_state, "final_files") else []
+            self._pending_tool_calls = []
 
         # ── Step 2: Check if escalation is needed ────────────────────────────
         if not budget_controller.can_activate_agent():
@@ -987,6 +996,100 @@ class Orchestrator:
                 continue
             calls = output.get("tool_calls", [])
             self._pending_tool_calls.extend(calls)
+
+    def _build_report_payload(self, session) -> Dict[str, Any]:
+        """Serialize a build session into a lightweight run-state payload."""
+        iterations = []
+        for record in session.iterations:
+            iterations.append({
+                "iteration": record.iteration,
+                "files_written": record.files_written,
+                "syntax_errors": len(record.syntax_errors),
+                "execution_failures": sum(
+                    1 for result in record.execution_results if not result.success
+                ),
+                "command_failures": sum(
+                    1 for result in record.command_results if not result.success
+                ),
+                "tests": None if record.test_result is None else {
+                    "framework": record.test_result.framework,
+                    "passed": record.test_result.passed,
+                    "failed": record.test_result.failed,
+                    "errors": record.test_result.errors,
+                    "success": record.test_result.success,
+                },
+                "passed": record.passed,
+            })
+
+        return {
+            "success": session.success,
+            "summary": session.summary(),
+            "final_files": session.final_files,
+            "iterations": iterations,
+        }
+
+    def _format_build_verification(self, session) -> str:
+        """Return a short user-facing verification note for a build session."""
+        if not session.iterations:
+            return ""
+
+        last = session.iterations[-1]
+        parts = [
+            "Verification: passed" if session.success else "Verification: failed",
+        ]
+        if last.syntax_errors:
+            parts.append(f"{len(last.syntax_errors)} syntax error(s)")
+        failed_exec = sum(1 for result in last.execution_results if not result.success)
+        if failed_exec:
+            parts.append(f"{failed_exec} runtime check(s) failed")
+        failed_commands = sum(1 for result in last.command_results if not result.success)
+        if failed_commands:
+            parts.append(f"{failed_commands} build/test command(s) failed")
+        if last.test_result is not None:
+            if last.test_result.framework == "none":
+                parts.append("no tests found")
+            elif last.test_result.success:
+                parts.append(
+                    f"{last.test_result.framework} {last.test_result.passed} passed"
+                )
+            else:
+                parts.append(
+                    f"{last.test_result.framework} "
+                    f"{last.test_result.failed} failed / {last.test_result.errors} errors"
+                )
+        return " ".join(parts) + "."
+
+    def _merge_build_validation(self, validation_report, run_state) -> None:
+        """Fold build-loop validation into the final validation report."""
+        build_report = getattr(run_state, "build_report", None)
+        if not build_report:
+            return
+
+        passed = bool(build_report.get("success"))
+        summary = build_report.get("summary", "Build validation completed")
+        validation_report.checks.append(
+            ValidationCheck(
+                check_name="build_validation",
+                passed=passed,
+                severity="info" if passed else "error",
+                message=summary,
+            )
+        )
+
+        if not passed:
+            validation_report.validation_state = ValidationState.VALIDATION_FAILURE
+            validation_report.overall_passed = False
+
+        passed_checks = sum(1 for check in validation_report.checks if check.passed)
+        total_checks = len(validation_report.checks)
+        state_value = (
+            validation_report.validation_state
+            if isinstance(validation_report.validation_state, str)
+            else validation_report.validation_state.value
+        )
+        validation_report.summary = (
+            f"Validation {state_value}: {passed_checks}/{total_checks} checks passed"
+        )
 
     def _execute_file_operations(
         self,

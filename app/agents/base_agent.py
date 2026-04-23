@@ -102,7 +102,10 @@ class BaseAgent(ABC):
             response = self.llm_client.generate(
                 prompt, max_tokens=max_tokens, temperature=temperature
             )
-            result = self._parse_response(response)
+            result = self._parse_response(
+                response,
+                allow_tool_calls=has_file_tools,
+            )
 
         # ── Model-agnostic fallback: extract & write code blocks ─────────────
         if has_file_tools and task_frame is not None:
@@ -323,8 +326,16 @@ class BaseAgent(ABC):
         system_prompt = self.get_system_prompt()
 
         file_tools_block = ""
-        if "repo_tool" in self.tools:
+        wants_file_output = self._wants_file_output(
+            getattr(task_frame, "normalized_request", "")
+        )
+        if "repo_tool" in self.tools and wants_file_output:
             file_tools_block = _TOOL_CALL_INSTRUCTIONS
+        elif "repo_tool" in self.tools:
+            file_tools_block = (
+                "FILE OPERATIONS: Do not emit tool calls or write files in this response. "
+                "Refine the explanation and code in markdown only.\n"
+            )
 
         prompt = (
             f"{system_prompt}\n"
@@ -353,9 +364,13 @@ class BaseAgent(ABC):
     # Response parsing
     # ------------------------------------------------------------------
 
-    def _parse_response(self, response: str) -> Dict[str, Any]:
+    def _parse_response(
+        self,
+        response: str,
+        allow_tool_calls: bool = True,
+    ) -> Dict[str, Any]:
         """Parse agent response, extracting any tool calls."""
-        tool_calls = parse_tool_calls(response)
+        tool_calls = parse_tool_calls(response) if allow_tool_calls else []
 
         # Strip tool_call blocks from the display text
         import re

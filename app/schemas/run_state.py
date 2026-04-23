@@ -58,6 +58,7 @@ class RunState(BaseModel):
     
     # Files written and verified by the build loop
     final_files: List[str] = Field(default_factory=list)
+    build_report: Optional[Dict[str, Any]] = None
     
     # Lifecycle tracking (NEW)
     spawn_recommendations: List[Dict[str, Any]] = Field(default_factory=list)

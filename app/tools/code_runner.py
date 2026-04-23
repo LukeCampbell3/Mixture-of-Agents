@@ -120,7 +120,7 @@ class CodeRunner:
     TIMEOUT = 30  # seconds per execution
 
     def __init__(self, workspace_root: str = "."):
-        self.workspace_root = os.path.abspath(workspace_root)
+        self.workspace_root = str(Path(workspace_root).resolve())
 
     # ------------------------------------------------------------------
     # Syntax checking (fast, no execution)
@@ -209,11 +209,11 @@ class CodeRunner:
 
     def _has_pytest(self) -> bool:
         try:
-            subprocess.run(
+            result = subprocess.run(
                 [sys.executable, "-m", "pytest", "--version"],
                 capture_output=True, timeout=5
             )
-            return True
+            return result.returncode == 0
         except Exception:
             return False
 
@@ -245,7 +245,7 @@ class CodeRunner:
                 failed_tests.append(line[7:].split(" - ")[0].strip())
 
         return TestResult(
-            success=(failed == 0 and errors == 0),
+            success=(result.success and failed == 0 and errors == 0),
             passed=passed, failed=failed, errors=errors,
             output=output, framework="pytest",
             elapsed_s=elapsed, failed_tests=failed_tests
@@ -294,26 +294,47 @@ class CodeRunner:
     # Command execution
     # ------------------------------------------------------------------
 
-    def run_command(self, command: str) -> ExecutionResult:
-        """Run an arbitrary shell command in the workspace."""
-        return self._run_cmd(command, shell=True)
+    def run_command(
+        self,
+        command,
+        cwd: str = ".",
+        shell: bool = False,
+        env: Optional[Dict[str, str]] = None,
+        timeout: Optional[int] = None,
+    ) -> ExecutionResult:
+        """Run a command in the workspace."""
+        return self._run_cmd(
+            command,
+            shell=shell,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+        )
 
     def _run_cmd(
         self,
         cmd,
         shell: bool = False,
         file_path: str = "",
+        cwd: str = ".",
+        env: Optional[Dict[str, str]] = None,
+        timeout: Optional[int] = None,
     ) -> ExecutionResult:
         cmd_str = cmd if isinstance(cmd, str) else " ".join(str(c) for c in cmd)
         t0 = time.perf_counter()
         try:
+            full_cwd = self._resolve_cwd(cwd)
+            merged_env = os.environ.copy()
+            if env:
+                merged_env.update(env)
             proc = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=self.TIMEOUT,
-                cwd=self.workspace_root,
+                timeout=timeout or self.TIMEOUT,
+                cwd=full_cwd,
                 shell=shell,
+                env=merged_env,
             )
             elapsed = time.perf_counter() - t0
             return ExecutionResult(
@@ -329,7 +350,7 @@ class CodeRunner:
             elapsed = time.perf_counter() - t0
             return ExecutionResult(
                 success=False, returncode=-1,
-                stdout="", stderr=f"Timed out after {self.TIMEOUT}s",
+                stdout="", stderr=f"Timed out after {timeout or self.TIMEOUT}s",
                 elapsed_s=elapsed, command=cmd_str, file_path=file_path
             )
         except FileNotFoundError as e:
@@ -346,3 +367,24 @@ class CodeRunner:
                 stdout="", stderr=str(e),
                 elapsed_s=elapsed, command=cmd_str, file_path=file_path
             )
+
+    def _resolve_cwd(self, cwd: str) -> str:
+        """Resolve a command working directory inside the workspace."""
+        raw_cwd = (cwd or ".").strip() or "."
+        candidate = Path(raw_cwd)
+        if candidate.is_absolute():
+            raise ValueError(f"Absolute working directories are not allowed: {cwd!r}")
+
+        root = Path(self.workspace_root).resolve()
+        full = (root / candidate).resolve(strict=False)
+        try:
+            common = os.path.commonpath([
+                os.path.normcase(str(root)),
+                os.path.normcase(str(full)),
+            ])
+        except ValueError as exc:
+            raise ValueError(f"Working directory escapes workspace: {cwd!r}") from exc
+
+        if common != os.path.normcase(str(root)):
+            raise ValueError(f"Working directory escapes workspace: {cwd!r}")
+        return str(full)
