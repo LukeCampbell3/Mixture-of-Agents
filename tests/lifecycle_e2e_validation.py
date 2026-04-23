@@ -15,6 +15,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List
 
+ROOT = Path(__file__).parent.parent.resolve()
+sys.path.insert(0, str(ROOT))
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 
 # ---------------------------------------------------------------------------
 # Stub LLM client so run_task() works without a real API
@@ -106,6 +113,9 @@ def create_patched_orchestrator(data_dir: str = "data/e2e_test"):
     orch.skill_pack_registry = get_skill_pack_registry()
     orch.lifecycle_manager = LifecycleManager(registry, orch.embedding_generator)
     orch.budget_mode = "balanced"
+    orch.max_parallel_agents = 1
+    orch.max_tokens = 800
+    orch.auto_approve_file_ops = False
 
     # Agent factory for dynamic agents
     from app.agent_factory import AgentFactory
@@ -113,9 +123,13 @@ def create_patched_orchestrator(data_dir: str = "data/e2e_test"):
 
     # Skip GapAnalyzer (needs embeddings at init, not critical for lifecycle)
     class _NoOpGapAnalyzer:
+        def __init__(self, embedding_generator):
+            self.embedding_generator = embedding_generator
+            self.agent_embeddings = {}
+
         def analyze_gap(self, *a, **kw):
             return {}
-    orch.gap_analyzer = _NoOpGapAnalyzer()
+    orch.gap_analyzer = _NoOpGapAnalyzer(orch.embedding_generator)
 
     return orch
 

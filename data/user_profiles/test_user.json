@@ -1,0 +1,27 @@
+{
+  "user_id": "test_user",
+  "created_at": "2026-04-23T00:33:14.084285",
+  "updated_at": "2026-04-23T01:48:41.105715",
+  "task_category_stats": {},
+  "total_tasks": 0,
+  "agent_preferences": {
+    "code_primary": {
+      "agent_id": "code_primary",
+      "pinned": true,
+      "disabled": false,
+      "preferred_for_categories": [
+        "coding_stable"
+      ],
+      "custom_activation_threshold": null
+    }
+  },
+  "budget_preference": {
+    "default_mode": "balanced",
+    "max_agents_override": null,
+    "max_tokens_override": null,
+    "max_time_override": null,
+    "latency_tolerance": "normal"
+  },
+  "validation_thoroughness": "normal",
+  "adaptation_rate": 0.1
+}

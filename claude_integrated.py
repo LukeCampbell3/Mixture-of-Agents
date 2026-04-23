@@ -29,6 +29,7 @@ import shlex
 import signal
 import select
 import re as _re
+import tempfile
 from typing import Dict, List, Any, Optional
 
 # Import the agentic network
@@ -36,6 +37,7 @@ from app.orchestrator import Orchestrator
 from app.schemas.run_state import RunState
 from app.models.llm_client import create_llm_client
 from app.tools.filesystem import FilesystemExecutor, FileOperation
+from app.openmythos_runtime import OpenMythosRuntimeAdapter
 
 
 # ---------------------------------------------------------------------------
@@ -818,6 +820,7 @@ DEFAULT_CONFIG = {
             "max_parallel_agents": 3,
             "max_tokens": 800,
             "auto_approve_file_ops": False,
+            "openmythos_auto_adapt": True,
             "debug": False
         }
     },
@@ -857,6 +860,11 @@ def set_active_config(key, value):
         save_config(config)
         return True
     return False
+
+def _coerce_bool(value) -> bool:
+    if isinstance(value, str):
+        return value.lower() not in ("false", "0", "off", "no")
+    return bool(value)
 
 
 # ----------------------------
@@ -998,13 +1006,18 @@ file_edit_mode = FileEditMode()
 # ----------------------------
 
 class AgenticNetworkClient:
-    def __init__(self, ollama_manager: OllamaManager, device_profile: dict):
+    def __init__(self, ollama_manager: OllamaManager, device_profile: Optional[dict] = None):
         self.orchestrator = None
         self.ollama_manager = ollama_manager
+        if device_profile is None:
+            from app.device_profile import load_or_create
+            device_profile = load_or_create()
         self.device_profile = device_profile
         self.ai_enabled = False
         self.worker_model = device_profile["models"]["worker"]
         self.router_model = device_profile["models"]["router"]
+        self.openmythos_adapter = None
+        self._last_orchestrator_kwargs = {}
         # Conversation history: list of {"role": "user"|"assistant", "content": str}
         self.history: list = []
         self.max_history_turns = 6   # keep last 6 exchanges (12 messages)
@@ -1026,25 +1039,37 @@ class AgenticNetworkClient:
             max_tokens      = active_config.get("max_tokens", rt.get("max_tokens", 800))
 
             # Coerce types (config values are stored as strings via /config set)
-            if isinstance(enable_parallel, str):
-                enable_parallel = enable_parallel.lower() not in ("false", "0", "off")
+            enable_parallel = _coerce_bool(enable_parallel)
             max_agents = int(max_agents)
             max_tokens = int(max_tokens)
 
             # Auto-approve file operations if enabled in config
             auto_approve = active_config.get("auto_approve_file_ops", False)
             
-            self.orchestrator = Orchestrator(
-                llm_provider=provider,
-                llm_model=self.worker_model,
-                llm_base_url=active_config.get("llm_base_url") or "http://localhost:11434",
-                router_model=self.router_model,
-                budget_mode=rt.get("budget_mode", "balanced"),
-                enable_parallel=enable_parallel,
-                max_parallel_agents=max_agents,
-                max_tokens=max_tokens,
-                auto_approve_file_ops=auto_approve,
-            )
+            self._last_orchestrator_kwargs = {
+                "llm_provider": provider,
+                "llm_model": self.worker_model,
+                "llm_base_url": active_config.get("llm_base_url") or "http://localhost:11434",
+                "router_model": self.router_model,
+                "budget_mode": rt.get("budget_mode", "balanced"),
+                "enable_parallel": enable_parallel,
+                "max_parallel_agents": max_agents,
+                "max_tokens": max_tokens,
+                "auto_approve_file_ops": auto_approve,
+            }
+
+            self.orchestrator = Orchestrator(**self._last_orchestrator_kwargs)
+            self.openmythos_adapter = OpenMythosRuntimeAdapter(self.orchestrator)
+
+            if _coerce_bool(active_config.get("openmythos_auto_adapt", True)):
+                adaptation = self.openmythos_adapter.adapt()
+                applied_count = len(adaptation.get("applied_promotions", []))
+                created_count = len(adaptation.get("created_subagents", []))
+                if applied_count or created_count:
+                    print(Color.green(
+                        f"  OpenMythos adapted registry: {applied_count} promotion(s), "
+                        f"{created_count} subagent(s)"
+                    ))
 
             print(Color.green("✅ Agentic Network initialized"))
             print(Color.dim(f"  Worker : {self.worker_model}"))
@@ -1060,6 +1085,32 @@ class AgenticNetworkClient:
             print(Color.red(f"Error initializing Agentic Network: {e}"))
             self.ai_enabled = False
             return False
+
+    def openmythos_status(self) -> Dict[str, Any]:
+        if not self.openmythos_adapter:
+            return {"available": False, "reason": "OpenMythos adapter is not initialized"}
+        return {"available": True, **self.openmythos_adapter.status()}
+
+    def openmythos_adapt(self, scores_path: Optional[str] = None) -> Dict[str, Any]:
+        if not self.openmythos_adapter:
+            return {"adapted": False, "reason": "OpenMythos adapter is not initialized"}
+        return self.openmythos_adapter.adapt(scores_path=scores_path)
+
+    def openmythos_validate(self, sample_size: int = 6, compare: bool = True) -> Dict[str, Any]:
+        if not self.openmythos_adapter:
+            return {"error": "OpenMythos adapter is not initialized"}
+
+        if not compare:
+            return self.openmythos_adapter.validate_existing_prompts(sample_size=sample_size)
+
+        with tempfile.TemporaryDirectory(prefix="openmythos_baseline_") as tmpdir:
+            baseline_kwargs = dict(self._last_orchestrator_kwargs)
+            baseline_kwargs["data_dir"] = tmpdir
+            baseline = Orchestrator(**baseline_kwargs)
+            return self.openmythos_adapter.compare_against_baseline(
+                baseline,
+                sample_size=sample_size,
+            )
 
     def process_request(self, user_input: str, context: str = "",
                         workspace_root: str = ".") -> tuple:
@@ -1275,6 +1326,9 @@ def print_help():
             "/test":               "Test agentic network with a simple request",
             "/concurrency [n|off]":"Set parallel agents",
             "/build [on|off]":     "Toggle codebase mode (large tokens + build loop)",
+            "/openmythos status":   "Show OpenMythos adaptation status",
+            "/openmythos adapt":    "Apply OpenMythos promotions/subagents from scores",
+            "/openmythos compare":  "Validate OpenMythos vs original orchestrator",
             "/history":            "Show conversation history",
             "/new, /clear":        "Clear conversation history",
         },
@@ -1503,6 +1557,47 @@ def main():
                     print(Color.green(f"Concurrency set to {n} agent(s), parallel={'on' if n > 1 else 'off'}."))
                 except ValueError:
                     print(Color.red("Usage: /concurrency <number 1-16>  or  /concurrency off"))
+            continue
+
+        if cmd.startswith("/openmythos"):
+            parts = cmd.split()
+            action = parts[1].lower() if len(parts) > 1 else "status"
+
+            if action == "status":
+                print(Color.green("OpenMythos status:"))
+                print(json.dumps(agentic_client.openmythos_status(), indent=2))
+                continue
+
+            if action == "adapt":
+                scores_path = parts[2] if len(parts) > 2 else None
+                result = agentic_client.openmythos_adapt(scores_path=scores_path)
+                print(Color.green("OpenMythos adaptation:"))
+                print(json.dumps(result, indent=2))
+                continue
+
+            if action in ("validate", "compare"):
+                sample_size = 6
+                if len(parts) > 2:
+                    try:
+                        sample_size = int(parts[2])
+                    except ValueError:
+                        print(Color.red("Usage: /openmythos compare [sample_size]"))
+                        continue
+                compare = action == "compare"
+                print(Color.yellow(
+                    "Running OpenMythos comparative validation..."
+                    if compare else
+                    "Running OpenMythos prompt validation..."
+                ))
+                result = agentic_client.openmythos_validate(
+                    sample_size=sample_size,
+                    compare=compare,
+                )
+                print(Color.green("OpenMythos validation result:"))
+                print(json.dumps(result, indent=2))
+                continue
+
+            print(Color.red("Usage: /openmythos status|adapt [scores.jsonl]|validate [n]|compare [n]"))
             continue
 
         if cmd == "/test":

@@ -19,6 +19,7 @@ data/episodes/
 data/reports/
 data/memory/
 data/retrieval_index/
+artifacts/
 configs/routing.yaml
 configs/lifecycle.yaml
 configs/budgets.yaml
