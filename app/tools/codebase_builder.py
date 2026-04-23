@@ -35,6 +35,7 @@ class BuildConfig:
     tokens_per_iteration: int = 4000   # large budget for complete modules
     run_entry_points: bool = True       # execute main files after writing
     run_tests: bool = True              # run test suite after each iteration
+    test_scope: str = "written"         # "written" or "workspace"
     auto_generate_tests: bool = True    # ask agent to write tests if none exist
     timeout_per_run: int = 30           # seconds per file execution
     verbose: bool = True
@@ -180,22 +181,31 @@ class CodebaseBuilder:
                             print(f"  [build]     {r.error_summary[:200]}")
 
             # ── Step 4: Generate tests if none exist ─────────────────────────
+            related_tests = self._related_test_paths(files_written)
             if self.config.auto_generate_tests and iteration == 1:
-                existing_tests = self.runner._discover_tests()
+                existing_tests = related_tests
                 if not existing_tests and py_files:
                     test_response = self._request_tests(task_text, files_written)
                     test_files = self._write_files(test_response, task_text + " tests", [])
                     if self.config.verbose and test_files:
                         for f in test_files:
                             print(f"  [build]   wrote test: {f}")
+                    files_written.extend(
+                        path for path in test_files if path not in files_written
+                    )
+                    related_tests = self._related_test_paths(files_written)
 
             # ── Step 5: Run tests ────────────────────────────────────────────
             test_result: Optional[TestResult] = None
             if self.config.run_tests and not syntax_errors:
-                test_result = self.runner.run_tests()
+                if self.config.test_scope == "workspace":
+                    test_paths = None
+                else:
+                    test_paths = related_tests
+                test_result = self.runner.run_tests(test_paths=test_paths)
                 if self.config.verbose:
                     if test_result.framework == "none":
-                        print(f"  [build]   tests: no test files found")
+                        print(f"  [build]   tests: no generated test files found")
                     else:
                         status = "✓" if test_result.success else "✗"
                         print(
@@ -335,6 +345,21 @@ class CodebaseBuilder:
             if test_result.framework != "none":
                 return False
         return True
+
+    def _related_test_paths(self, files_written: List[str]) -> List[str]:
+        """Return tests that were generated for this build session.
+
+        The builder should not treat unrelated repository test failures as
+        failures of a standalone generated snippet.
+        """
+
+        if self.config.test_scope == "workspace":
+            return self.runner._discover_tests()
+        return [
+            path
+            for path in files_written
+            if _is_test_file_re()(path)
+        ]
 
     def _build_repair_prompt(
         self,

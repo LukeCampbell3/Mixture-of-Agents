@@ -149,6 +149,7 @@ class LifecycleManager:
             
             perf = self.agent_performance[agent_id]
             perf["activation_count"] += 1
+            perf["last_activation_task_count"] = len(self.task_history)
             if success:
                 perf["success_count"] += 1
             else:
@@ -212,6 +213,16 @@ class LifecycleManager:
         task_type = current_task.get("task_type", "unknown")
         task_text = current_task.get("normalized_request", "")
         task_family = self._infer_task_family(task_type, task_text)
+
+        if self._has_covering_specialist(task_family):
+            decision = LifecycleDecision(
+                decision_type="no_spawn",
+                agent_id="proposed",
+                reason=f"Existing specialist already covers {task_family}",
+                scores={"coverage": 1.0}
+            )
+            self.decision_history.append(decision)
+            return False, None
         
         # Check if this cluster has recurring issues
         if task_family not in self.cluster_stats:
@@ -274,6 +285,32 @@ class LifecycleManager:
         self.decision_history.append(decision)
         
         return True, spawn_spec
+
+    def _has_covering_specialist(self, task_family: str) -> bool:
+        """Return True when a live specialist already covers this cluster."""
+        coverage_aliases = {
+            "api_migration": {"api", "api_migration"},
+            "security_audit": {"security", "security_audit"},
+        }
+        domains = coverage_aliases.get(task_family, {task_family})
+        inactive_states = {
+            LifecycleState.ARCHIVED.value,
+            LifecycleState.DEPRECATED.value,
+            LifecycleState.DORMANT.value,
+        }
+
+        for agent in self.registry.agents.values():
+            if not isinstance(agent, AgentSpec):
+                continue
+            state = agent.lifecycle_state.value if hasattr(agent.lifecycle_state, "value") else str(agent.lifecycle_state)
+            if state in inactive_states:
+                continue
+            tags = set(agent.tags or [])
+            if "spawned" not in tags and not agent.agent_id.startswith("specialist_"):
+                continue
+            if agent.domain in domains or agent.target_cluster in domains:
+                return True
+        return False
     
     def _infer_required_tools(self, task_family: str) -> List[str]:
         """Infer required tools based on task family."""
@@ -505,6 +542,8 @@ class LifecycleManager:
             # Calculate usage rate
             activation_count = perf.get("activation_count", 0)
             usage_rate = activation_count / len(self.task_history)
+            last_activation = perf.get("last_activation_task_count", 0)
+            tasks_since_last_activation = len(self.task_history) - last_activation
             
             # Calculate success rate
             success_rate = 0.0
@@ -512,12 +551,13 @@ class LifecycleManager:
                 success_rate = perf.get("success_count", 0) / activation_count
             
             performance_data = {
-                "quality_lift": success_rate * 0.5,  # Simplified
+                "quality_lift": success_rate * 0.5 if tasks_since_last_activation < self.grace_period_tasks else 0.0,
                 "unique_coverage": 0.3,  # Would be computed from overlap
                 "user_preference": 0.5,  # Would come from user feedback
                 "high_value_bonus": 0.0,
                 "maintenance_cost": 0.1,
-                "redundancy": 0.3 if usage_rate < 0.05 else 0.0
+                "redundancy": 0.8 if tasks_since_last_activation >= self.grace_period_tasks else (0.3 if usage_rate < 0.05 else 0.0),
+                "tasks_since_last_activation": tasks_since_last_activation,
             }
             
             # Check for demotion/pruning

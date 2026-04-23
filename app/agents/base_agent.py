@@ -86,8 +86,12 @@ class BaseAgent(ABC):
         temperature = modified_context.get("temperature", 0.7)
         max_tokens  = modified_context.get("max_tokens", 800)
 
-        # Use streaming execution when available and file tools are present
-        has_file_tools = "repo_tool" in self.tools
+        # Use file tools only when the user asks for durable code changes.
+        # Explanatory coding questions should not create files or build logs.
+        wants_file_output = self._wants_file_output(
+            getattr(task_frame, "normalized_request", "") if task_frame is not None else ""
+        )
+        has_file_tools = "repo_tool" in self.tools and wants_file_output
         has_streaming  = hasattr(self.llm_client, "stream_tokens")
 
         if has_file_tools and has_streaming:
@@ -200,8 +204,17 @@ class BaseAgent(ABC):
 
         # Include file tool instructions when repo_tool is available
         file_tools_block = ""
-        if "repo_tool" in self.tools:
+        wants_file_output = self._wants_file_output(
+            getattr(task_frame, "normalized_request", "")
+        )
+        if "repo_tool" in self.tools and wants_file_output:
             file_tools_block = _TOOL_CALL_INSTRUCTIONS
+        elif "repo_tool" in self.tools:
+            file_tools_block = (
+                "FILE OPERATIONS: Do not emit tool calls, do not write files, "
+                "and do not include fake write_file helpers or sections about "
+                "saving code to disk. Answer with explanation and markdown code only.\n"
+            )
 
         # Knowledge block (fetched docs) goes before the task
         knowledge_section = ""
@@ -238,8 +251,66 @@ class BaseAgent(ABC):
                 "- Provide your unique expertise to complement the team.\n"
             )
 
-        prompt += "\n\nProvide your analysis and any file operations needed."
+        prompt += (
+            "\n\nProvide a detailed, production-ready response."
+            " If implementation work is required, include any file operations needed,"
+            " explain the changes clearly, call out edge cases, and mention how the"
+            " result should be validated."
+        )
         return prompt
+
+    @staticmethod
+    def _wants_file_output(request: str) -> bool:
+        """Decide whether this task should write files.
+
+        Questions asking how something would be implemented should receive
+        readable code and explanation, not automatic workspace writes.
+        """
+
+        text = (request or "").strip().lower()
+        if not text:
+            return False
+
+        explanatory_prefixes = (
+            "how would you",
+            "how would i",
+            "how do you",
+            "how do i",
+            "explain",
+            "describe",
+            "what is",
+            "show me how",
+        )
+        explicit_file_terms = (
+            "write file",
+            "save",
+            "create file",
+            "edit",
+            "modify",
+            "update",
+            "patch",
+            "fix this file",
+            "in the repo",
+            "in this repo",
+            "add a file",
+        )
+        if any(term in text for term in explicit_file_terms):
+            return True
+        if text.startswith(explanatory_prefixes):
+            return False
+
+        artifact_verbs = (
+            "implement",
+            "create",
+            "build",
+            "write",
+            "generate",
+            "fix",
+            "debug",
+            "refactor",
+            "add",
+        )
+        return text.startswith(artifact_verbs)
 
     def _build_refinement_prompt(
         self,

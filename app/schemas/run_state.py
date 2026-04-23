@@ -53,7 +53,7 @@ class RunState(BaseModel):
     final_state: str = "running"  # running, success, partial_success, failure
     final_answer: Optional[str] = None
     
-    # File operations emitted by agents — awaiting user approval before execution
+    # File operations emitted by agents and still pending after orchestration
     pending_tool_calls: List[Any] = Field(default_factory=list)
     
     # Files written and verified by the build loop

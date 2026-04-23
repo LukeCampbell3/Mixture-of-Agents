@@ -238,9 +238,9 @@ class Router:
             hybrid_gap = not (has_code and has_prose)
 
         # ── Domain keywords that belong to a different specialist ────────────
+        task_text_lower = task_frame.normalized_request.lower()
         DOMAIN_ESCALATION = {
             "web_research": [
-                "latest", "current", "recent", "as of 2024", "as of 2025",
                 "according to", "documentation says", "official docs",
             ],
             "critic_verifier": [
@@ -249,18 +249,100 @@ class Router:
             ],
         }
         escalate_to: List[str] = []
+        freshness_triggers = [
+            "latest",
+            "current version",
+            "recent",
+            "as of 2024",
+            "as of 2025",
+            "as of 2026",
+            "official docs",
+        ]
+        if any(trigger in task_text_lower for trigger in freshness_triggers):
+            escalate_to.append("web_research")
         for agent_id, phrases in DOMAIN_ESCALATION.items():
             if any(p in text for p in phrases):
-                escalate_to.append(agent_id)
+                if agent_id not in escalate_to:
+                    escalate_to.append(agent_id)
+
+        openmythos_refiners: List[str] = []
+        if "coding" in task_type_str or "hybrid" in task_type_str:
+            task_text = task_frame.normalized_request.lower()
+            refiner_triggers = [
+                "thread",
+                "concurrent",
+                "edge case",
+                "debug",
+                "fix",
+                "refactor",
+                "performance",
+                "error handling",
+                "database",
+                "api",
+                "cache",
+                "decorator",
+                "distributed",
+                "production",
+                "complex",
+            ]
+            output_triggers = [
+                "test",
+                "edge case",
+                "potential bug",
+                "race condition",
+                "timed out",
+                "max iterations",
+                "needs testing",
+            ]
+            hard_task_signal = any(trigger in task_text for trigger in refiner_triggers)
+            failed_build_signal = any(trigger in text for trigger in output_triggers)
+            if (
+                hard_task_signal
+                or failed_build_signal
+            ):
+                openmythos_refiners = self._openmythos_refinement_agents()
+                for refiner_id in reversed(openmythos_refiners):
+                    if refiner_id not in escalate_to:
+                        escalate_to.insert(0, refiner_id)
 
         # ── Decision ─────────────────────────────────────────────────────────
-        should_escalate = has_uncertainty or is_short or hybrid_gap or bool(escalate_to)
+        should_escalate = (
+            has_uncertainty
+            or is_short
+            or hybrid_gap
+            or bool(escalate_to)
+            or bool(openmythos_refiners)
+        )
 
         if should_escalate and not escalate_to:
             # Default escalation: add critic_verifier for quality check
             escalate_to = ["critic_verifier"]
 
         return should_escalate, escalate_to
+
+    def _openmythos_refinement_agents(self) -> List[str]:
+        """Return routable OpenMythos coding refiners, strongest first."""
+
+        refiners = []
+        for agent in self.registry.get_routable_agents():
+            tags = set(agent.tags or [])
+            if "openmythos" not in tags or "subagent" not in tags:
+                continue
+            if agent.domain != "coding" and "coding" not in tags and "code" not in tags:
+                continue
+            if "refinement" not in tags and "refiner" not in agent.agent_id:
+                continue
+            refiners.append(agent)
+
+        refiners.sort(
+            key=lambda agent: (
+                agent.calibration_score,
+                agent.average_quality_lift,
+                agent.expected_activation_rate,
+            ),
+            reverse=True,
+        )
+        return [agent.agent_id for agent in refiners]
 
     def build_sub_task(self, primary_output: str, task_frame: TaskFrame, sub_agent_id: str) -> str:
         """Build a focused sub-task prompt for a sub-agent.

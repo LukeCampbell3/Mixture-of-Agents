@@ -1,87 +1,149 @@
 {
-  "version": "1.0.0",
   "agents": {
     "code_primary": {
       "agent_id": "code_primary",
-      "name": "Code Primary",
+      "average_quality_lift": 0.0,
+      "average_token_cost": 0.0,
+      "calibration_score": 0.5,
+      "created_at": "2026-04-21T15:59:48.739827",
       "description": "General-purpose coding agent: implementation, debugging, architecture",
       "domain": "coding",
+      "expected_activation_rate": 0.0,
       "lifecycle_state": "hot",
-      "tools": [
-        "repo_tool",
-        "test_runner"
-      ],
+      "name": "Code Primary",
+      "overlap_with": {},
+      "parent_lineage": null,
+      "successful_activations": 0,
       "tags": [
         "coding",
         "implementation",
         "debugging"
       ],
-      "created_at": "2026-04-21T15:59:48.739827",
-      "updated_at": "2026-04-21T15:59:48.739827",
-      "parent_lineage": null,
       "target_cluster": null,
-      "expected_activation_rate": 0.0,
-      "total_activations": 0,
-      "successful_activations": 0,
-      "average_quality_lift": 0.0,
-      "average_token_cost": 0.0,
-      "calibration_score": 0.5,
-      "overlap_with": {}
-    },
-    "web_research": {
-      "agent_id": "web_research",
-      "name": "Web Research",
-      "description": "Research agent for current documentation and fact validation",
-      "domain": "research",
-      "lifecycle_state": "warm",
       "tools": [
-        "web_tool",
-        "citation_checker"
+        "repo_tool",
+        "test_runner"
       ],
-      "tags": [
-        "research",
-        "documentation",
-        "validation"
-      ],
-      "created_at": "2026-04-21T15:59:48.739827",
-      "updated_at": "2026-04-21T15:59:48.739827",
-      "parent_lineage": null,
-      "target_cluster": null,
-      "expected_activation_rate": 0.0,
       "total_activations": 0,
-      "successful_activations": 0,
+      "updated_at": "2026-04-21T15:59:48.739827"
+    },
+    "code_primary_hard_code_refiner": {
+      "agent_id": "code_primary_hard_code_refiner",
       "average_quality_lift": 0.0,
       "average_token_cost": 0.0,
       "calibration_score": 0.5,
-      "overlap_with": {}
+      "created_at": "2026-04-23T01:29:05.116804",
+      "description": "Held-out hard coding tasks benefit from deeper refinement loops.",
+      "domain": "coding",
+      "expected_activation_rate": 0.2,
+      "lifecycle_state": "probationary",
+      "name": "Hard Code Refiner Subagent",
+      "overlap_with": {},
+      "parent_lineage": "code_primary",
+      "successful_activations": 0,
+      "tags": [
+        "openmythos",
+        "subagent",
+        "hard_coding",
+        "refinement"
+      ],
+      "target_cluster": "hard_coding_refinement",
+      "tools": [
+        "repo_tool",
+        "test_runner",
+        "code_analyzer"
+      ],
+      "total_activations": 0,
+      "updated_at": "2026-04-23T01:29:05.116804"
+    },
+    "code_primary_loop4_code_refiner": {
+      "agent_id": "code_primary_loop4_code_refiner",
+      "average_quality_lift": 0.0,
+      "average_token_cost": 0.0,
+      "calibration_score": 0.5,
+      "created_at": "2026-04-23T00:41:48.051778",
+      "description": "Held-out coding tasks show reliable loop-depth gains, but the hard-task bucket is still too small for a hard-only refiner.",
+      "domain": "coding",
+      "expected_activation_rate": 0.2,
+      "lifecycle_state": "probationary",
+      "name": "OpenMythos Loop Code Refiner",
+      "overlap_with": {},
+      "parent_lineage": "code_primary",
+      "successful_activations": 0,
+      "tags": [
+        "openmythos",
+        "subagent",
+        "coding",
+        "code",
+        "implementation",
+        "debugging",
+        "testing",
+        "refinement"
+      ],
+      "target_cluster": "openmythos_coding_refinement",
+      "tools": [
+        "repo_tool",
+        "test_runner",
+        "code_analyzer"
+      ],
+      "total_activations": 0,
+      "updated_at": "2026-04-23T00:41:48.051778"
     },
     "critic_verifier": {
       "agent_id": "critic_verifier",
-      "name": "Critic Verifier",
+      "average_quality_lift": 0.0,
+      "average_token_cost": 0.0,
+      "calibration_score": 0.5,
+      "created_at": "2026-04-21T15:59:48.739827",
       "description": "Verification agent for consistency checking and risk assessment",
       "domain": "verification",
+      "expected_activation_rate": 0.0,
       "lifecycle_state": "warm",
-      "tools": [
-        "test_runner",
-        "citation_checker"
-      ],
+      "name": "Critic Verifier",
+      "overlap_with": {},
+      "parent_lineage": null,
+      "successful_activations": 0,
       "tags": [
         "verification",
         "testing",
         "quality"
       ],
-      "created_at": "2026-04-21T15:59:48.739827",
-      "updated_at": "2026-04-21T15:59:48.739827",
-      "parent_lineage": null,
       "target_cluster": null,
-      "expected_activation_rate": 0.0,
+      "tools": [
+        "test_runner",
+        "citation_checker"
+      ],
       "total_activations": 0,
-      "successful_activations": 0,
+      "updated_at": "2026-04-21T15:59:48.739827"
+    },
+    "web_research": {
+      "agent_id": "web_research",
       "average_quality_lift": 0.0,
       "average_token_cost": 0.0,
       "calibration_score": 0.5,
-      "overlap_with": {}
+      "created_at": "2026-04-21T15:59:48.739827",
+      "description": "Research agent for current documentation and fact validation",
+      "domain": "research",
+      "expected_activation_rate": 0.0,
+      "lifecycle_state": "warm",
+      "name": "Web Research",
+      "overlap_with": {},
+      "parent_lineage": null,
+      "successful_activations": 0,
+      "tags": [
+        "research",
+        "documentation",
+        "validation"
+      ],
+      "target_cluster": null,
+      "tools": [
+        "web_tool",
+        "citation_checker"
+      ],
+      "total_activations": 0,
+      "updated_at": "2026-04-21T15:59:48.739827"
     }
   },
-  "last_updated": "2026-04-21T15:59:48.739827"
+  "last_updated": "2026-04-23T01:29:05.116804",
+  "version": "1.0.0"
 }

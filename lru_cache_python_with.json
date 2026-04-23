@@ -1,0 +1,39 @@
+{
+    "tool": "write_file",
+    "path": "lru_cache.py",
+    "content": """
+from typing import Dict, Optional
+import threading
+from collections import OrderedDict
+
+class LRUCache:
+    def __init__(self, capacity: int):
+        # Initialize the cache with a maximum size and an ordered dictionary to maintain LRU order
+        self.capacity = capacity
+        self.cache: OrderedDict[str, Any] = OrderedDict()
+        self.lock = threading.Lock()
+
+    def get(self, key: str) -> Optional[Any]:
+        # Check if the key exists in the cache
+        with self.lock:
+            if key in self.cache:
+                # Move the accessed item to the end of the dictionary to maintain LRU order
+                self.cache.move_to_end(key)
+                return self.cache[key]
+            else:
+                return None
+
+    def put(self, key: str, value: Any) -> bool:
+        # Check if the cache is at its capacity
+        with self.lock:
+            if len(self.cache) >= self.capacity:
+                # Remove the least recently used item from the dictionary
+                oldest_key = next(iter(self.cache))
+                del self.cache[oldest_key]
+            # Add or update the key-value pair in the cache
+            self.cache[key] = value
+            return True
+
+    def __repr__(self):
+        # Return a string representation of the cache for debugging purposes
+        return str({k: v for k, v in self.cache.items()})
