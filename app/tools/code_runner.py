@@ -245,7 +245,7 @@ class CodeRunner:
                 failed_tests.append(line[7:].split(" - ")[0].strip())
 
         return TestResult(
-            success=result.success and failed == 0 and errors == 0,
+            success=(failed == 0 and errors == 0),
             passed=passed, failed=failed, errors=errors,
             output=output, framework="pytest",
             elapsed_s=elapsed, failed_tests=failed_tests

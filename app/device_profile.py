@@ -212,7 +212,7 @@ def _build_profile(force: bool = False) -> dict:
             "budget_mode":        budget,
             "max_validation_retries": 2,
             "verifier_on_first_pass": True,
-            "max_tokens":         800,  # per-agent token budget
+            "max_tokens":         2000,  # per-agent token budget
         },
         "web_search": {
             "enabled":                    True,

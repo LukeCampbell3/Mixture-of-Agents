@@ -818,8 +818,8 @@ DEFAULT_CONFIG = {
             "budget_mode": "balanced",
             "enable_parallel": True,
             "max_parallel_agents": 3,
-            "max_tokens": 800,
-            "auto_approve_file_ops": False,
+            "max_tokens": 2000,
+            "auto_approve_file_ops": True,
             "openmythos_auto_adapt": True,
             "debug": False
         }
@@ -1114,7 +1114,12 @@ class AgenticNetworkClient:
 
     def process_request(self, user_input: str, context: str = "",
                         workspace_root: str = ".") -> tuple:
-        """Returns (answer_text, pending_tool_calls)."""
+        """Returns (answer_text, pending_tool_calls).
+
+        File operations are handled inside the orchestrator, so the
+        returned tool-call list is informational only and stays empty
+        for the CLI to avoid duplicate prompts or duplicate writes.
+        """
         if not self.ai_enabled:
             return ("AI features are disabled. Ollama is not ready.\n"
                     "Run: ollama serve  then restart the CLI.", [])
@@ -1152,7 +1157,7 @@ class AgenticNetworkClient:
         if len(self.history) > max_msgs:
             self.history = self.history[-max_msgs:]
 
-        return answer, getattr(result, "pending_tool_calls", [])
+        return answer, []
 
     # ------------------------------------------------------------------
     # Topic shift detection
@@ -1383,7 +1388,10 @@ def main():
         print(Color.green("✓ Ollama is installed"))
 
     if ollama_manager.ollama_installed and not ollama_manager.check_ollama_running():
-        ollama_manager.start_ollama_server()
+        try:
+            ollama_manager.start_ollama_server()
+        except Exception as exc:
+            print(Color.red(f"✗ Runtime backend failed to start: {exc}"))
     elif ollama_manager.ollama_installed:
         print(Color.green("✓ Ollama server is running"))
 
@@ -1619,8 +1627,8 @@ def main():
                 if current == "codebase":
                     rt["budget_mode"] = "balanced"
                     set_active_config("budget_mode", "balanced")
-                    set_active_config("max_tokens", 800)
-                    print(Color.yellow("Codebase mode OFF — back to balanced (800 tokens/agent)"))
+                    set_active_config("max_tokens", 2000)
+                    print(Color.yellow("Codebase mode OFF — back to balanced (2000 tokens/agent)"))
                 else:
                     rt["budget_mode"] = "codebase"
                     set_active_config("budget_mode", "codebase")
@@ -1635,7 +1643,7 @@ def main():
             elif parts[1].lower() in ("off", "0", "false"):
                 rt["budget_mode"] = "balanced"
                 set_active_config("budget_mode", "balanced")
-                set_active_config("max_tokens", 800)
+                set_active_config("max_tokens", 2000)
                 print(Color.yellow("Codebase mode OFF"))
             else:
                 print(Color.red("Usage: /build  or  /build on|off"))

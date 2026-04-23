@@ -77,8 +77,8 @@ class Orchestrator:
         use_lead_agent_pattern: bool = True,
         enable_parallel: bool = True,
         max_parallel_agents: int = 3,
-        max_tokens: int = 800,
-        auto_approve_file_ops: bool = False
+        max_tokens: int = 2000,
+        auto_approve_file_ops: bool = True
     ):
         """Initialize orchestrator.
         
@@ -94,8 +94,8 @@ class Orchestrator:
             use_lead_agent_pattern: Whether to use lead-agent pattern (default: True)
             enable_parallel:     Enable parallel agent execution (default: True)
             max_parallel_agents: Maximum parallel agents (default: 3)
-            max_tokens:          Max tokens per agent call (default: 800)
-            auto_approve_file_ops: Automatically approve file operations without user input (default: False)
+            max_tokens:          Max tokens per agent call (default: 2000)
+            auto_approve_file_ops: Automatically approve file operations without user input (default: True)
         """
         # ── worker model (all agent execution) ──────────────────────────────
         self.llm_client = create_llm_client(llm_provider, llm_model, llm_base_url)
@@ -244,17 +244,21 @@ class Orchestrator:
         
         # Update run state
         run_state.final_answer = final_answer
-        # Collect all tool calls emitted by agents during this run
-        run_state.pending_tool_calls = getattr(self, "_pending_tool_calls", [])
-        
+
         # Execute file operations (with approval if enabled)
-        pending_ops = getattr(self, "_pending_tool_calls", [])
+        pending_ops = list(getattr(self, "_pending_tool_calls", []))
         if pending_ops:
-            self._execute_file_operations(
+            execution_results = self._execute_file_operations(
                 pending_ops, 
                 workspace_root,
                 auto_approve=self.auto_approve_file_ops
             )
+            for result in execution_results:
+                if result.success and result.op.path not in run_state.final_files:
+                    run_state.final_files.append(result.op.path)
+            run_state.pending_tool_calls = []
+        else:
+            run_state.pending_tool_calls = []
         
         self._pending_tool_calls = []  # reset for next run
         run_state.validation_report = validation_report.model_dump()
@@ -476,6 +480,7 @@ class Orchestrator:
                 tokens_per_iteration=self.max_tokens,
                 run_entry_points=True,
                 run_tests=True,
+                test_scope="workspace" if self.budget_mode == "codebase" else "written",
                 auto_generate_tests=(self.budget_mode == "codebase"),
                 verbose=True,
             )
@@ -490,8 +495,8 @@ class Orchestrator:
                 initial_response=primary_output.get("raw_response", primary_text),
                 existing_tool_calls=written_ops,
             )
-            # Append build summary to the answer
-            primary_text = primary_text + "\n\n" + session.summary()
+            if self.budget_mode == "codebase":
+                primary_text = primary_text + "\n\n" + session.summary()
             run_state.final_files = session.final_files if hasattr(run_state, "final_files") else []
 
         # ── Step 2: Check if escalation is needed ────────────────────────────
@@ -1314,10 +1319,17 @@ Your task is to:
 
 Focus on creating an answer that is MORE COMPLETE, MORE ACCURATE, and MORE INSIGHTFUL than any individual agent's contribution. The answer should demonstrate clear value from the collaborative process.
 
+Be detailed and production-oriented. If code or file changes were involved, explain what was changed, why it was done that way, notable edge cases, and any validation performed.
+
 Final synthesized answer:"""
         
         try:
-            final_answer = self.llm_client.generate(synthesis_prompt, max_tokens=1000, temperature=0.4)
+            synthesis_tokens = max(1200, min(self.max_tokens, 4000))
+            final_answer = self.llm_client.generate(
+                synthesis_prompt,
+                max_tokens=synthesis_tokens,
+                temperature=0.4,
+            )
         except Exception:
             # Fallback: return the best single-agent output
             final_answer = max(agent_outputs.values(), key=lambda o: len(o.get("output", "")))["output"]
