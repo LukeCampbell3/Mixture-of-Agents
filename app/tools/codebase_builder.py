@@ -182,6 +182,8 @@ class CodebaseBuilder:
 
             py_files = [path for path in files_written if path.endswith(".py")]
             syntax_errors = self.runner.check_syntax_all(py_files)
+            if self.config.verbose and py_files:
+                print(f"  [build]   syntax-check files: {', '.join(py_files)}")
             if self.config.verbose and syntax_errors:
                 for path, err in syntax_errors:
                     print(f"  [build]   syntax error in {path}: {err[:80]}")
@@ -197,6 +199,7 @@ class CodebaseBuilder:
                             f"  [build]   run {entry_point}: {status} "
                             f"({result.elapsed_s:.2f}s)"
                         )
+                        print(f"  [build]     command: {result.command}")
                         if not result.success:
                             print(f"  [build]     {result.error_summary[:200]}")
 
@@ -234,6 +237,8 @@ class CodebaseBuilder:
                         print("  [build]   tests: no generated test files found")
                     else:
                         status = "PASS" if test_result.success else "FAIL"
+                        if test_result.command:
+                            print(f"  [build]   test command: {test_result.command}")
                         print(
                             f"  [build]   tests ({test_result.framework}): {status}  "
                             f"{test_result.passed}P / {test_result.failed}F / {test_result.errors}E"
@@ -408,6 +413,7 @@ class CodebaseBuilder:
                     f"  [build]   cmd {spec.description}: {status} "
                     f"({result.elapsed_s:.2f}s)"
                 )
+                print(f"  [build]     command: {result.command}")
                 if not result.success:
                     print(f"  [build]     {result.error_summary[:200]}")
         return results
@@ -624,16 +630,29 @@ class CodebaseBuilder:
                 continue
             file_contents.append(f"### {path}\n```python\n{content[:2000]}\n```")
 
+        test_framework = "pytest" if self.runner._has_pytest() else "unittest"
+        if test_framework == "pytest":
+            requirements = [
+                "- Use pytest",
+                "- Prefer plain test functions or pytest-style assertions",
+                "- Save as test_<module>.py",
+            ]
+        else:
+            requirements = [
+                "- Use unittest from the Python standard library",
+                "- Create unittest.TestCase-based tests",
+                "- Save as test_<module>.py",
+            ]
+
         prompt = "\n".join(
             [
-                f"Write pytest tests for the following code (task: {task_text}).",
+                f"Write {test_framework} tests for the following code (task: {task_text}).",
                 "",
                 "Requirements:",
-                "- Use pytest",
                 "- Test the main functions/classes",
                 "- Include edge cases",
-                "- Save as test_<module>.py",
                 "- Use write_file tool calls",
+                *requirements,
                 "",
                 "Source files:",
                 "\n".join(file_contents),

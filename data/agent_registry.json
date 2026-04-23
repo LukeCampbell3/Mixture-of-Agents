@@ -1,75 +1,73 @@
 {
+  "version": "1.0.0",
   "agents": {
     "code_primary": {
       "agent_id": "code_primary",
-      "average_quality_lift": 0.0,
-      "average_token_cost": 0.0,
-      "calibration_score": 0.5,
-      "created_at": "2026-04-21T15:59:48.739827",
+      "name": "Code Primary",
       "description": "General-purpose coding agent: implementation, debugging, architecture",
       "domain": "coding",
-      "expected_activation_rate": 0.0,
       "lifecycle_state": "hot",
-      "name": "Code Primary",
-      "overlap_with": {},
-      "parent_lineage": null,
-      "successful_activations": 0,
+      "tools": [
+        "repo_tool",
+        "test_runner"
+      ],
       "tags": [
         "coding",
         "implementation",
         "debugging"
       ],
+      "created_at": "2026-04-21T15:59:48.739827",
+      "updated_at": "2026-04-21T15:59:48.739827",
+      "parent_lineage": null,
       "target_cluster": null,
-      "tools": [
-        "repo_tool",
-        "test_runner"
-      ],
+      "expected_activation_rate": 0.0,
       "total_activations": 0,
-      "updated_at": "2026-04-21T15:59:48.739827"
-    },
-    "code_primary_hard_code_refiner": {
-      "agent_id": "code_primary_hard_code_refiner",
+      "successful_activations": 0,
       "average_quality_lift": 0.0,
       "average_token_cost": 0.0,
       "calibration_score": 0.5,
-      "created_at": "2026-04-23T01:29:05.116804",
+      "overlap_with": {}
+    },
+    "code_primary_hard_code_refiner": {
+      "agent_id": "code_primary_hard_code_refiner",
+      "name": "Hard Code Refiner Subagent",
       "description": "Held-out hard coding tasks benefit from deeper refinement loops.",
       "domain": "coding",
-      "expected_activation_rate": 0.2,
       "lifecycle_state": "probationary",
-      "name": "Hard Code Refiner Subagent",
-      "overlap_with": {},
-      "parent_lineage": "code_primary",
-      "successful_activations": 0,
+      "tools": [
+        "repo_tool",
+        "test_runner",
+        "code_analyzer"
+      ],
       "tags": [
         "openmythos",
         "subagent",
         "hard_coding",
         "refinement"
       ],
+      "created_at": "2026-04-23T01:29:05.116804",
+      "updated_at": "2026-04-23T01:29:05.116804",
+      "parent_lineage": "code_primary",
       "target_cluster": "hard_coding_refinement",
+      "expected_activation_rate": 0.2,
+      "total_activations": 0,
+      "successful_activations": 0,
+      "average_quality_lift": 0.0,
+      "average_token_cost": 0.0,
+      "calibration_score": 0.5,
+      "overlap_with": {}
+    },
+    "code_primary_loop4_code_refiner": {
+      "agent_id": "code_primary_loop4_code_refiner",
+      "name": "OpenMythos Loop Code Refiner",
+      "description": "Held-out coding tasks show reliable loop-depth gains, but the hard-task bucket is still too small for a hard-only refiner.",
+      "domain": "coding",
+      "lifecycle_state": "probationary",
       "tools": [
         "repo_tool",
         "test_runner",
         "code_analyzer"
       ],
-      "total_activations": 0,
-      "updated_at": "2026-04-23T01:29:05.116804"
-    },
-    "code_primary_loop4_code_refiner": {
-      "agent_id": "code_primary_loop4_code_refiner",
-      "average_quality_lift": 0.0,
-      "average_token_cost": 0.0,
-      "calibration_score": 0.5,
-      "created_at": "2026-04-23T00:41:48.051778",
-      "description": "Held-out coding tasks show reliable loop-depth gains, but the hard-task bucket is still too small for a hard-only refiner.",
-      "domain": "coding",
-      "expected_activation_rate": 0.2,
-      "lifecycle_state": "probationary",
-      "name": "OpenMythos Loop Code Refiner",
-      "overlap_with": {},
-      "parent_lineage": "code_primary",
-      "successful_activations": 0,
       "tags": [
         "openmythos",
         "subagent",
@@ -80,70 +78,99 @@
         "testing",
         "refinement"
       ],
+      "created_at": "2026-04-23T00:41:48.051778",
+      "updated_at": "2026-04-23T00:41:48.051778",
+      "parent_lineage": "code_primary",
       "target_cluster": "openmythos_coding_refinement",
-      "tools": [
-        "repo_tool",
-        "test_runner",
-        "code_analyzer"
-      ],
+      "expected_activation_rate": 0.2,
       "total_activations": 0,
-      "updated_at": "2026-04-23T00:41:48.051778"
-    },
-    "critic_verifier": {
-      "agent_id": "critic_verifier",
+      "successful_activations": 0,
       "average_quality_lift": 0.0,
       "average_token_cost": 0.0,
       "calibration_score": 0.5,
-      "created_at": "2026-04-21T15:59:48.739827",
+      "overlap_with": {}
+    },
+    "critic_verifier": {
+      "agent_id": "critic_verifier",
+      "name": "Critic Verifier",
       "description": "Verification agent for consistency checking and risk assessment",
       "domain": "verification",
-      "expected_activation_rate": 0.0,
       "lifecycle_state": "warm",
-      "name": "Critic Verifier",
-      "overlap_with": {},
-      "parent_lineage": null,
-      "successful_activations": 0,
+      "tools": [
+        "test_runner",
+        "citation_checker"
+      ],
       "tags": [
         "verification",
         "testing",
         "quality"
       ],
+      "created_at": "2026-04-21T15:59:48.739827",
+      "updated_at": "2026-04-21T15:59:48.739827",
+      "parent_lineage": null,
       "target_cluster": null,
-      "tools": [
-        "test_runner",
-        "citation_checker"
-      ],
+      "expected_activation_rate": 0.0,
       "total_activations": 0,
-      "updated_at": "2026-04-21T15:59:48.739827"
-    },
-    "web_research": {
-      "agent_id": "web_research",
+      "successful_activations": 0,
       "average_quality_lift": 0.0,
       "average_token_cost": 0.0,
       "calibration_score": 0.5,
-      "created_at": "2026-04-21T15:59:48.739827",
+      "overlap_with": {}
+    },
+    "web_research": {
+      "agent_id": "web_research",
+      "name": "Web Research",
       "description": "Research agent for current documentation and fact validation",
       "domain": "research",
-      "expected_activation_rate": 0.0,
       "lifecycle_state": "warm",
-      "name": "Web Research",
-      "overlap_with": {},
-      "parent_lineage": null,
-      "successful_activations": 0,
+      "tools": [
+        "web_tool",
+        "citation_checker"
+      ],
       "tags": [
         "research",
         "documentation",
         "validation"
       ],
+      "created_at": "2026-04-21T15:59:48.739827",
+      "updated_at": "2026-04-21T15:59:48.739827",
+      "parent_lineage": null,
       "target_cluster": null,
-      "tools": [
-        "web_tool",
-        "citation_checker"
-      ],
+      "expected_activation_rate": 0.0,
       "total_activations": 0,
-      "updated_at": "2026-04-21T15:59:48.739827"
+      "successful_activations": 0,
+      "average_quality_lift": 0.0,
+      "average_token_cost": 0.0,
+      "calibration_score": 0.5,
+      "overlap_with": {}
+    },
+    "specialist_ml_engineering": {
+      "agent_id": "specialist_ml_engineering",
+      "name": "Ml Engineering Specialist",
+      "description": "Dynamically spawned specialist for ml_engineering tasks. Created in response to: CONVERSATION HISTORY (most recent last):\nUser: please create an algorithm that abstractly takes array inputs and uses a ",
+      "domain": "ml_engineering",
+      "lifecycle_state": "probationary",
+      "tools": [
+        "repo_tool",
+        "web_tool"
+      ],
+      "tags": [
+        "ml_engineering",
+        "spawned",
+        "dynamic"
+      ],
+      "created_at": "2026-04-23T22:14:50.508891",
+      "updated_at": "2026-04-23T22:14:50.508891",
+      "parent_lineage": null,
+      "target_cluster": null,
+      "expected_activation_rate": 0.0,
+      "total_activations": 0,
+      "successful_activations": 0,
+      "average_quality_lift": 0.0,
+      "average_token_cost": 0.0,
+      "calibration_score": 0.5,
+      "overlap_with": {}
     }
   },
-  "last_updated": "2026-04-23T01:29:05.116804",
-  "version": "1.0.0"
+  "last_updated": "2026-04-23T22:14:50.508891"
 }

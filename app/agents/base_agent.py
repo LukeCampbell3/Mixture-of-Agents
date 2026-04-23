@@ -255,10 +255,11 @@ class BaseAgent(ABC):
             )
 
         prompt += (
-            "\n\nProvide a detailed, production-ready response."
-            " If implementation work is required, include any file operations needed,"
-            " explain the changes clearly, call out edge cases, and mention how the"
-            " result should be validated."
+            "\n\nProvide a production-ready response."
+            " If implementation work is required, prefer durable file output,"
+            " ensure every dependency or helper is defined, keep the explanation concise,"
+            " call out edge cases, and include enough structure for the build loop"
+            " to validate the result."
         )
         return prompt
 

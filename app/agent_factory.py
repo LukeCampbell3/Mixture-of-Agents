@@ -171,6 +171,8 @@ Requirements for the system prompt:
   3. For conceptual questions, explain with markdown code and do not emit tool calls
   4. Use a descriptive snake_case filename when writing files
   5. Prefer adding or updating tests when implementation changes need validation
+  6. Never reference undefined symbols; import or implement every helper you use
+  7. Prefer self-contained solutions unless the user explicitly requests a dependency
 - List 4-6 specific areas of expertise relevant to {domain}
 - Keep it under 220 words
 - Do NOT include meta-commentary; write the prompt itself, nothing else
@@ -216,6 +218,8 @@ RULES:
 - When writing files, choose a descriptive snake_case filename (e.g. graph_search.py, neural_net.py).
 - Use markdown code blocks with the correct language tag after any tool call.
 - Prefer adding or updating tests when implementation changes need validation.
+- Never reference undefined symbols; import or implement every helper you use.
+- Prefer self-contained solutions unless the user explicitly requests a dependency.
 - After the code, add a brief explanation (2-5 sentences).
 - Review any conversation history provided and build upon prior work when relevant.
 

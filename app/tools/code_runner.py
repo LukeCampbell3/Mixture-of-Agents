@@ -63,6 +63,7 @@ class TestResult:
     output: str
     framework: str  # pytest, unittest, jest, etc.
     elapsed_s: float
+    command: str = ""
     failed_tests: List[str] = field(default_factory=list)
 
 
@@ -198,7 +199,7 @@ class CodeRunner:
             return TestResult(
                 success=True, passed=0, failed=0, errors=0,
                 output="No test files found.", framework="none",
-                elapsed_s=0.0
+                elapsed_s=0.0, command=""
             )
 
         # Prefer pytest if available
@@ -248,7 +249,7 @@ class CodeRunner:
             success=(result.success and failed == 0 and errors == 0),
             passed=passed, failed=failed, errors=errors,
             output=output, framework="pytest",
-            elapsed_s=elapsed, failed_tests=failed_tests
+            elapsed_s=elapsed, command=result.command, failed_tests=failed_tests
         )
 
     def _run_unittest(self, test_paths: List[str], t0: float) -> TestResult:
@@ -274,7 +275,7 @@ class CodeRunner:
             success=result.success and failed == 0 and errors == 0,
             passed=passed, failed=failed, errors=errors,
             output=output, framework="unittest",
-            elapsed_s=elapsed
+            elapsed_s=elapsed, command=result.command
         )
 
     def _discover_tests(self) -> List[str]:

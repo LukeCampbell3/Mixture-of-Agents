@@ -478,7 +478,7 @@ class Orchestrator:
             from app.tools.codebase_builder import CodebaseBuilder, BuildConfig
             build_cfg = BuildConfig(
                 workspace_root=workspace,
-                max_iterations=5 if self.budget_mode == "codebase" else 3,
+                max_iterations=5,
                 tokens_per_iteration=self.max_tokens,
                 run_entry_points=True,
                 run_tests=True,

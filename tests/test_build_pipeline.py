@@ -155,14 +155,16 @@ class BuildPipelineTests(unittest.TestCase):
         """Generated tests should continue running during later repair iterations."""
         with tempfile.TemporaryDirectory() as tmpdir:
             def agent_fn(prompt, max_tok):
-                if "Write pytest tests" in prompt:
+                if "tests for the following code" in prompt:
                     payload = {
                         "tool": "write_file",
                         "path": "test_bad.py",
                         "content": (
+                            "import unittest\n\n"
                             "from bad import add\n\n"
-                            "def test_add():\n"
-                            "    assert add(1, 2) == 4\n"
+                            "class AddTests(unittest.TestCase):\n"
+                            "    def test_add(self):\n"
+                            "        self.assertEqual(add(1, 2), 4)\n"
                         ),
                     }
                     return f'<tool_call>{json.dumps(payload)}</tool_call>'
@@ -198,6 +200,31 @@ class BuildPipelineTests(unittest.TestCase):
             self.assertIsNotNone(session.iterations[1].test_result)
             self.assertNotEqual(session.iterations[1].test_result.framework, "none")
             self.assertFalse(session.success)
+
+    def test_request_tests_uses_unittest_when_pytest_is_unavailable(self):
+        """Generated test prompts should match the framework the runner can execute."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source = Path(tmpdir, "model.py")
+            source.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+
+            builder = CodebaseBuilder(
+                config=BuildConfig(
+                    workspace_root=tmpdir,
+                    max_iterations=1,
+                    run_entry_points=False,
+                    run_tests=False,
+                    auto_generate_tests=True,
+                    verbose=False,
+                ),
+                agent_fn=lambda prompt, max_tok: prompt,
+            )
+
+            with patch.object(builder.runner, "_has_pytest", return_value=False):
+                prompt = builder._request_tests("create add", ["model.py"])
+
+            self.assertIn("Write unittest tests", prompt)
+            self.assertIn("Use unittest from the Python standard library", prompt)
+            self.assertNotIn("Use pytest", prompt)
 
     def test_code_runner_pytest_detection_checks_return_code(self):
         """A missing pytest install should not be treated as available."""
