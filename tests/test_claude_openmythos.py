@@ -47,6 +47,11 @@ def test_build_runtime_client_uses_fallback_client_when_manager_is_in_fallback_m
         fallback_base_url="http://localhost:11434",
         strict_openmythos=False,
         show_fallback=False,
+        transport="generate",
+        keep_alive_router="-1",
+        keep_alive_worker="15m",
+        keep_alive_fallback="10m",
+        router_model="qwen2.5:0.5b",
     )
     manager = launcher.OpenMythosManager(
         FakeServer(),

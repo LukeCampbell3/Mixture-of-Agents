@@ -16,6 +16,20 @@ class TaskType(str, Enum):
     UNKNOWN = "unknown"
 
 
+class SpecificationDensity(str, Enum):
+    """How fully the user specified the task."""
+    LOW = "low"        # vague / open-ended
+    MEDIUM = "medium"  # clear intent, some gaps
+    HIGH = "high"      # precise, tightly scoped
+
+
+class AbstractionOpportunity(str, Enum):
+    """How much the task benefits from going one level deeper."""
+    LOW = "low"        # narrow fix, no abstraction needed
+    MEDIUM = "medium"  # some generalisation would help
+    HIGH = "high"      # clear opportunity for reusable design
+
+
 class TaskFrame(BaseModel):
     """Structured representation of a task."""
     
@@ -31,6 +45,16 @@ class TaskFrame(BaseModel):
     novelty_score: float = Field(default=0.5, ge=0.0, le=1.0, description="Task novelty 0-1")
     retrieval_gap_score: float = Field(default=0.0, ge=0.0, le=1.0, description="Need for retrieval 0-1")
     freshness_requirement: float = Field(default=0.0, ge=0.0, le=1.0, description="Need for current info 0-1")
+
+    # ── New framing attributes ───────────────────────────────────────────
+    specification_density: SpecificationDensity = Field(
+        default=SpecificationDensity.MEDIUM,
+        description="How fully the user specified the task",
+    )
+    abstraction_opportunity: AbstractionOpportunity = Field(
+        default=AbstractionOpportunity.MEDIUM,
+        description="How much the task benefits from deeper abstraction",
+    )
     
     class Config:
         use_enum_values = True

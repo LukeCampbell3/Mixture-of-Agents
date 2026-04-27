@@ -508,26 +508,114 @@ class Orchestrator:
             run_state.final_files = session.final_files if hasattr(run_state, "final_files") else []
             self._pending_tool_calls = []
 
-        # ── Step 2: Check if escalation is needed ────────────────────────────
+        # ── Step 2: Score completion contract ────────────────────────────────
+        contract = self.validator.score_completion(task_frame, primary_text)
+        COMPLETION_THRESHOLD = 0.6
+        print(f"  [chain] Completion contract: {contract.overall:.2f} (threshold {COMPLETION_THRESHOLD})")
+
+        # ── Step 2b: Mandatory critic review for underspecified tasks ─────────
+        force_critic = self.router.needs_critic_review(task_frame, primary_text)
+        if force_critic and budget_controller.can_activate_agent():
+            critic_id = "critic_verifier"
+            if critic_id not in [a for a in run_state.active_agents]:
+                budget_controller.activate_agent()
+                run_state.active_agents.append(critic_id)
+
+                critic_spec = self.registry.get_agent(critic_id)
+                critic_agent = self._create_agent_instance(critic_spec, history)
+                critic_task = self.router.build_sub_task(primary_text, task_frame, critic_id)
+
+                from app.schemas.task_frame import TaskFrame as TF
+                import uuid as _uuid
+                critic_frame = TF(
+                    task_id=str(_uuid.uuid4()),
+                    normalized_request=critic_task,
+                    task_type=task_frame.task_type,
+                    hard_constraints=[],
+                    likely_tools=critic_spec.tools,
+                    difficulty_estimate=0.3,
+                    initial_uncertainty=0.3,
+                    novelty_score=0.3,
+                    freshness_requirement=task_frame.freshness_requirement,
+                )
+
+                critic_output = critic_agent.execute({
+                    "task_frame": critic_frame,
+                    "shared_context": f"Primary response:\n{primary_text}",
+                    "constraints": [],
+                    "available_tools": critic_spec.tools,
+                    "iteration": 1,
+                    "max_tokens": self.max_tokens // 2,
+                    "workspace_root": workspace,
+                    "knowledge_block": knowledge_block,
+                    "language_preference": lang_pref,
+                })
+                budget_controller.deactivate_agent()
+
+                critic_text = critic_output.get("output", "")
+                print(f"  [chain] Mandatory critic review: {critic_id}")
+
+                # ── Step 2c: Gap analysis on critic findings ─────────────────
+                # Use the gap analyzer to identify missing abstractions/tests
+                gap_report = self._run_gap_analysis(task_frame, primary_text, critic_text)
+                if gap_report:
+                    print(f"  [chain] Gap analysis: {len(gap_report)} gap(s) identified")
+
+                # ── Step 2d: Revise primary output if contract is weak ───────
+                if contract.overall < COMPLETION_THRESHOLD and budget_controller.can_activate_agent():
+                    budget_controller.activate_agent()
+                    revision_prompt = self._build_revision_prompt(
+                        task_frame, primary_text, critic_text, gap_report, contract,
+                    )
+                    revised_text = self.llm_client.generate(
+                        revision_prompt,
+                        max_tokens=self.max_tokens,
+                        temperature=0.4,
+                    )
+                    budget_controller.deactivate_agent()
+
+                    # Re-score after revision
+                    revised_contract = self.validator.score_completion(task_frame, revised_text)
+                    print(f"  [chain] Revised completion: {revised_contract.overall:.2f}")
+
+                    if revised_contract.overall > contract.overall:
+                        primary_text = revised_text
+                        contract = revised_contract
+                    # else keep original — diminishing returns
+
+                # Merge critic findings into output
+                if critic_text.strip() and critic_text.strip() != primary_text.strip():
+                    primary_text += f"\n\n---\n**Review notes:**\n{critic_text.strip()}"
+
+        # ── Step 3: Standard escalation (if still needed after critic) ────────
         if not budget_controller.can_activate_agent():
+            run_state.suppressed_agents = routing_decision.suppressed_agents
+            run_state.completion_contract = contract.model_dump()
             return primary_text
 
         should_escalate, escalate_to = self.router.needs_escalation(
             primary_text, task_frame
         )
 
-        if not should_escalate:
-            print(f"  [chain] No escalation needed — done in 1 agent")
+        # Skip escalation if completion contract is already strong
+        if not should_escalate or contract.overall >= COMPLETION_THRESHOLD:
+            if not force_critic:
+                print(f"  [chain] No escalation needed — done in 1 agent")
             run_state.suppressed_agents = routing_decision.suppressed_agents
+            run_state.completion_contract = contract.model_dump()
             return primary_text
 
-        # ── Step 3: Run sub-agents with focused sub-tasks ────────────────────
+        # ── Step 3b: Run sub-agents with focused sub-tasks ───────────────────
         sub_outputs: List[str] = [primary_text]
         max_sub = min(len(escalate_to), budget_controller.get_remaining_agents())
 
         for sub_id in escalate_to[:max_sub]:
             if not budget_controller.can_activate_agent():
                 break
+
+            # Skip critic if already ran above
+            if sub_id == "critic_verifier" and force_critic:
+                continue
 
             # Ensure the sub-agent exists (spawn if needed)
             sub_spec = self.registry.get_agent(sub_id)
@@ -585,6 +673,7 @@ class Orchestrator:
             print(f"  [chain] Sub-agent: {sub_id}")
 
         run_state.suppressed_agents = routing_decision.suppressed_agents
+        run_state.completion_contract = contract.model_dump()
 
         # ── Step 4: Merge — primary answer + sub-agent additions ─────────────
         if len(sub_outputs) == 1:
@@ -596,6 +685,117 @@ class Orchestrator:
             if extra and extra.strip() and extra.strip() != primary_text.strip():
                 merged += f"\n\n---\n{extra.strip()}"
         return merged
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Completion-gate helpers
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _run_gap_analysis(
+        self,
+        task_frame,
+        primary_text: str,
+        critic_text: str,
+    ) -> List[str]:
+        """Use the gap analyzer as a post-draft planner.
+
+        Identifies missing abstractions, missing tests, missing interfaces,
+        and missing caveats from the primary + critic output.
+        Returns a list of gap descriptions (may be empty).
+        """
+        combined = f"{primary_text}\n\n{critic_text}"
+        gaps: List[str] = []
+
+        # Check for missing test coverage
+        has_tests = any(m in combined.lower() for m in ["test", "assert", "pytest", "unittest"])
+        if not has_tests:
+            gaps.append("No tests or assertions found — add a minimal test harness")
+
+        # Check for missing error handling
+        has_error_handling = any(
+            m in combined.lower()
+            for m in ["try", "except", "catch", "error handling", "raise", "throw"]
+        )
+        if not has_error_handling:
+            gaps.append("No error handling visible — add exception handling for likely failure modes")
+
+        # Check for missing interface boundaries
+        abs_opp = getattr(task_frame, "abstraction_opportunity", "medium")
+        if abs_opp in ("medium", "high"):
+            has_interface = any(
+                m in combined.lower()
+                for m in ["interface", "abstract", "protocol", "base class", "generic", "configurable"]
+            )
+            if not has_interface:
+                gaps.append("No interface boundary — consider adding an abstraction layer for extensibility")
+
+        # Check for missing assumptions
+        has_assumptions = any(
+            m in combined.lower()
+            for m in ["assumption", "assumes", "caveat", "limitation"]
+        )
+        if not has_assumptions:
+            gaps.append("No assumptions declared — state what was assumed")
+
+        # Check for missing edge case coverage
+        has_edge = any(
+            m in combined.lower()
+            for m in ["edge case", "boundary", "empty", "null", "none", "overflow"]
+        )
+        if not has_edge:
+            gaps.append("No edge case coverage — handle boundary inputs")
+
+        return gaps
+
+    def _build_revision_prompt(
+        self,
+        task_frame,
+        primary_text: str,
+        critic_text: str,
+        gaps: List[str],
+        contract,
+    ) -> str:
+        """Build a revision prompt that addresses critic findings and gaps."""
+        gap_section = ""
+        if gaps:
+            gap_section = "GAPS IDENTIFIED:\n" + "\n".join(f"- {g}" for g in gaps) + "\n\n"
+
+        weak_dims = []
+        if contract.explicit_requirements_satisfied < 0.5:
+            weak_dims.append("explicit requirements coverage")
+        if contract.implied_requirements_satisfied < 0.3:
+            weak_dims.append("implied requirements (error handling, validation)")
+        if contract.edge_cases_addressed < 0.3:
+            weak_dims.append("edge case handling")
+        if contract.validation_evidence_present < 0.3:
+            weak_dims.append("tests or validation evidence")
+        if contract.assumptions_declared < 0.3:
+            weak_dims.append("explicit assumptions")
+
+        weak_section = ""
+        if weak_dims:
+            weak_section = (
+                "WEAK DIMENSIONS (improve these):\n"
+                + "\n".join(f"- {d}" for d in weak_dims)
+                + "\n\n"
+            )
+
+        return (
+            f"You are revising a solution based on critic feedback and gap analysis.\n\n"
+            f"ORIGINAL TASK:\n{task_frame.normalized_request}\n\n"
+            f"CURRENT SOLUTION:\n{primary_text}\n\n"
+            f"CRITIC FEEDBACK:\n{critic_text}\n\n"
+            f"{gap_section}"
+            f"{weak_section}"
+            f"INSTRUCTIONS:\n"
+            f"- Address the critic's critical issues.\n"
+            f"- Fill the identified gaps.\n"
+            f"- Strengthen the weak dimensions.\n"
+            f"- Do NOT remove working parts of the solution.\n"
+            f"- Keep the revision focused — fix what is broken, do not rewrite what works.\n"
+            f"- State any assumptions explicitly.\n"
+            f"- Include tests or validation if missing.\n\n"
+            f"Provide the revised, complete solution:"
+        )
 
     def _execute_with_lead_pattern(
         self,

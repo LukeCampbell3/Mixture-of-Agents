@@ -76,3 +76,6 @@ class RunState(BaseModel):
     base_model_version: str = "unknown"
     router_version: str = "1.0.0"
     agent_versions: Dict[str, str] = Field(default_factory=dict)
+
+    # Completion contract (scored gate for task closure)
+    completion_contract: Optional[Dict[str, Any]] = None

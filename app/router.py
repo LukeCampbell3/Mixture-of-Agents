@@ -80,6 +80,10 @@ class Router:
         
         # Identify likely tools
         likely_tools = self._identify_tools(user_request, task_type)
+
+        # ── New framing: specification density + abstraction opportunity ──
+        spec_density = self._estimate_specification_density(user_request)
+        abs_opportunity = self._estimate_abstraction_opportunity(user_request, task_type)
         
         task_frame = TaskFrame(
             task_id=str(uuid.uuid4()),
@@ -90,7 +94,9 @@ class Router:
             difficulty_estimate=0.5,  # Could be enhanced
             initial_uncertainty=initial_uncertainty,
             novelty_score=novelty_score,
-            freshness_requirement=freshness_requirement
+            freshness_requirement=freshness_requirement,
+            specification_density=spec_density,
+            abstraction_opportunity=abs_opportunity,
         )
         
         return task_frame
@@ -379,6 +385,103 @@ class Router:
             f"PRIMARY RESPONSE:\n{primary_output}\n\n"
             f"Add or correct anything in your domain ({domain}). Be concise."
         )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Specification density & abstraction opportunity
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _estimate_specification_density(self, request: str) -> str:
+        """Classify how fully the user specified the task.
+
+        LOW  — short, vague, open-ended ("build me a web app")
+        MEDIUM — clear intent with some gaps ("implement a REST API for users with CRUD")
+        HIGH — precise, tightly scoped ("add a --verbose flag to the CLI that prints timing")
+        """
+        text = request.strip()
+        words = text.split()
+        word_count = len(words)
+
+        constraint_markers = [
+            "must", "should", "require", "exactly", "only", "specific",
+            "constraint", "limit", "no more than", "at least", "between",
+        ]
+        constraint_hits = sum(1 for m in constraint_markers if m in text.lower())
+
+        if word_count < 8:
+            return "low"
+        if word_count < 15 and constraint_hits == 0:
+            return "low"
+        if constraint_hits >= 2 or word_count > 40:
+            return "high"
+        return "medium"
+
+    def _estimate_abstraction_opportunity(self, request: str, task_type) -> str:
+        """Classify how much the task benefits from going one level deeper.
+
+        HIGH — task implies reuse, library design, or multi-consumer interface
+        MEDIUM — task could benefit from parameterisation or clean boundaries
+        LOW — narrow fix, one-off script, or tightly scoped patch
+        """
+        text = request.lower()
+        task_type_str = task_type if isinstance(task_type, str) else task_type.value
+
+        high_markers = [
+            "library", "framework", "sdk", "api", "service", "module",
+            "reusable", "generic", "extensible", "plugin", "interface",
+            "design", "architecture", "system", "platform",
+        ]
+        low_markers = [
+            "fix", "bug", "typo", "rename", "delete", "remove",
+            "one-off", "script", "quick", "simple", "patch",
+        ]
+
+        high_hits = sum(1 for m in high_markers if m in text)
+        low_hits = sum(1 for m in low_markers if m in text)
+
+        if high_hits >= 2:
+            return "high"
+        if low_hits >= 2 or "planning" in task_type_str:
+            return "low"
+        if high_hits >= 1 or "coding" in task_type_str:
+            return "medium"
+        return "low"
+
+    def needs_critic_review(self, task_frame: TaskFrame, output: str) -> bool:
+        """Determine whether the critic must review this output.
+
+        Mandatory critic review when any of:
+        - User request is short and open-ended (low specification density)
+        - Output contains only direct implementation with little architecture
+        - Output has no explicit assumptions section
+        - Output has no tests or failure-mode coverage
+        - Task complexity is medium/high
+        - Confidence is high but evidence is thin
+        """
+        text = output.lower()
+        spec_density = getattr(task_frame, "specification_density", "medium")
+        difficulty = task_frame.difficulty_estimate
+
+        if spec_density == "low":
+            return True
+        if difficulty > 0.5:
+            return True
+
+        has_assumptions = any(
+            m in text for m in ["assumption", "assumes", "caveat", "limitation"]
+        )
+        if not has_assumptions:
+            return True
+
+        has_tests = any(
+            m in text for m in ["test", "assert", "pytest", "expect("]
+        )
+        has_failure = any(
+            m in text for m in ["error handling", "exception", "failure", "edge case"]
+        )
+        if not has_tests and not has_failure:
+            return True
+
+        return False
 
     def _classify_task_type(self, request: str) -> TaskType:
         """Classify task into category."""
